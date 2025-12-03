@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc -w",
-    "start": "node dist/mcp-server.js"
+    "start": "node dist/mcp-server.js",
+    "test": "npx tsx test/integration.ts"
   },
   "keywords": [
     "claude",

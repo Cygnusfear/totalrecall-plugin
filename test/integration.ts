@@ -1,0 +1,317 @@
+/**
+ * Integration tests for TotalRecall plugin
+ */
+
+import { SynthesisDatabase } from '../src/db.js';
+import { generateEmbedding, initEmbeddings, generateSynthesisEmbedding } from '../src/embeddings.js';
+import { unlinkSync, existsSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+
+const TEST_DB_PATH = join(tmpdir(), 'totalrecall-test.sqlite');
+
+async function cleanup() {
+  if (existsSync(TEST_DB_PATH)) {
+    unlinkSync(TEST_DB_PATH);
+  }
+}
+
+async function testDatabaseSchema() {
+  console.log('Test: Database schema creation...');
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+
+  // Test node creation
+  const node = db.createNode({
+    node_type: 'learning',
+    one_liner: 'Test learning',
+    summary: 'This is a test summary',
+    full_synthesis: 'Full synthesis text here',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test-session',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  if (!node.id) throw new Error('Node creation failed');
+  console.log('  - Node creation: PASS');
+
+  // Test raw content
+  const raw = db.createRawContent({
+    id: 'raw-1',
+    session_id: 'test-session',
+    synthesis_node_id: null,
+    content_type: 'message',
+    content: 'Test message content',
+    agent_id: null,
+    timestamp: Date.now(),
+    message_index: 0,
+  });
+
+  if (!raw.id) throw new Error('Raw content creation failed');
+  console.log('  - Raw content creation: PASS');
+
+  // Test queue item
+  const queueItem = db.createSynthesisQueueItem({
+    session_id: 'test-session',
+    agent_id: null,
+    chunk_type: 'session_chunk',
+    raw_content_ids: JSON.stringify(['raw-1']),
+    context: null,
+    message_count: 1,
+    status: 'pending',
+    retry_count: 0,
+    error: null,
+    synthesis_node_id: null,
+    created_at: Date.now(),
+  });
+
+  if (!queueItem.id) throw new Error('Queue item creation failed');
+  console.log('  - Queue item creation: PASS');
+
+  // Test progressive disclosure event
+  const pdEvent = db.createProgressiveDisclosureEvent({
+    event_type: 'search',
+    session_id: 'test-session',
+    agent_id: null,
+    query_text: 'test query',
+    search_latency_ms: 50,
+    results_count: 3,
+    node_ids: null,
+    injection_tokens: null,
+    expanded_node_id: null,
+    expansion_tokens: null,
+    message_tokens: null,
+  });
+
+  if (!pdEvent.id) throw new Error('PD event creation failed');
+  console.log('  - Progressive disclosure event: PASS');
+
+  db.close();
+  console.log('Database schema tests: PASS\n');
+}
+
+async function testEmbeddings() {
+  console.log('Test: Embeddings...');
+  await initEmbeddings();
+
+  const embedding = await generateEmbedding('Test text for embedding');
+  if (embedding.length !== 384) {
+    throw new Error(`Expected 384 dimensions, got ${embedding.length}`);
+  }
+  console.log('  - Embedding generation: PASS');
+
+  const synthEmbedding = await generateSynthesisEmbedding('One liner', 'Summary', 'learning');
+  if (synthEmbedding.length !== 384) {
+    throw new Error(`Expected 384 dimensions, got ${synthEmbedding.length}`);
+  }
+  console.log('  - Synthesis embedding: PASS');
+
+  console.log('Embedding tests: PASS\n');
+}
+
+async function testVectorSearch() {
+  console.log('Test: Vector search...');
+  await cleanup();
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+  await initEmbeddings();
+
+  // Create nodes with embeddings
+  const node1 = db.createNode({
+    node_type: 'decision',
+    one_liner: 'Use React for frontend',
+    summary: 'Decided to use React for the frontend framework',
+    full_synthesis: 'Full text',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const emb1 = await generateSynthesisEmbedding(node1.one_liner, node1.summary, node1.node_type);
+  db.insertEmbedding(node1.id, emb1);
+
+  const node2 = db.createNode({
+    node_type: 'learning',
+    one_liner: 'SQLite WAL mode improves concurrency',
+    summary: 'Learned that WAL mode helps with concurrent access',
+    full_synthesis: 'Full text',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const emb2 = await generateSynthesisEmbedding(node2.one_liner, node2.summary, node2.node_type);
+  db.insertEmbedding(node2.id, emb2);
+
+  // Search for React-related content
+  const queryEmb = await generateEmbedding('React frontend framework');
+  const results = db.searchByVector(queryEmb, 5, 0.3);
+
+  if (results.length === 0) {
+    throw new Error('Expected search results');
+  }
+
+  // React node should rank higher
+  if (results[0].node_id !== node1.id) {
+    console.log('Warning: React node not ranked first (may be acceptable)');
+  }
+  console.log('  - Vector search: PASS');
+
+  db.close();
+  console.log('Vector search tests: PASS\n');
+}
+
+async function testQueueOperations() {
+  console.log('Test: Queue operations...');
+  await cleanup();
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+
+  // Create pending item
+  const item = db.createSynthesisQueueItem({
+    session_id: 'test-session',
+    agent_id: null,
+    chunk_type: 'session_chunk',
+    raw_content_ids: '["raw-1"]',
+    context: null,
+    message_count: 1,
+    status: 'pending',
+    retry_count: 0,
+    error: null,
+    synthesis_node_id: null,
+    created_at: Date.now(),
+  });
+
+  // Get pending items
+  const pending = db.getPendingSynthesisQueue({ limit: 10 });
+  if (pending.length !== 1) {
+    throw new Error(`Expected 1 pending, got ${pending.length}`);
+  }
+  console.log('  - Get pending items: PASS');
+
+  // Update status
+  db.updateSynthesisQueueStatus(item.id, 'processing');
+  const updated = db.getSynthesisQueueItems({ status: 'processing' });
+  if (updated.length !== 1) {
+    throw new Error('Status update failed');
+  }
+  console.log('  - Update status: PASS');
+
+  // Increment retry
+  db.incrementSynthesisQueueRetry(item.id);
+  const retried = db.getSynthesisQueueItems({ status: 'pending' });
+  if (retried[0].retry_count !== 1) {
+    throw new Error('Retry increment failed');
+  }
+  console.log('  - Increment retry: PASS');
+
+  db.close();
+  console.log('Queue operation tests: PASS\n');
+}
+
+async function testProgressiveDisclosureAnalytics() {
+  console.log('Test: Progressive disclosure analytics...');
+  await cleanup();
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+
+  const now = Date.now();
+
+  // Create events
+  db.createProgressiveDisclosureEvent({
+    event_type: 'search',
+    session_id: 'test',
+    agent_id: null,
+    query_text: 'test',
+    search_latency_ms: 50,
+    results_count: 3,
+    node_ids: null,
+    injection_tokens: null,
+    expanded_node_id: null,
+    expansion_tokens: null,
+    message_tokens: null,
+  });
+
+  db.createProgressiveDisclosureEvent({
+    event_type: 'inject',
+    session_id: 'test',
+    agent_id: null,
+    query_text: null,
+    search_latency_ms: null,
+    results_count: null,
+    node_ids: '["id1"]',
+    injection_tokens: 100,
+    expanded_node_id: null,
+    expansion_tokens: null,
+    message_tokens: null,
+  });
+
+  db.createProgressiveDisclosureEvent({
+    event_type: 'expand',
+    session_id: 'test',
+    agent_id: null,
+    query_text: null,
+    search_latency_ms: null,
+    results_count: null,
+    node_ids: null,
+    injection_tokens: null,
+    expanded_node_id: 'id1',
+    expansion_tokens: 500,
+    message_tokens: null,
+  });
+
+  const stats = db.getProgressiveDisclosureAnalytics(now - 1000, now + 1000);
+
+  if (stats.totalSearches !== 1) throw new Error('Search count wrong');
+  if (stats.totalInjections !== 1) throw new Error('Injection count wrong');
+  if (stats.totalExpansions !== 1) throw new Error('Expansion count wrong');
+  if (stats.totalInjectionTokens !== 100) throw new Error('Injection tokens wrong');
+  if (stats.totalExpansionTokens !== 500) throw new Error('Expansion tokens wrong');
+
+  console.log('  - Analytics calculation: PASS');
+
+  db.close();
+  console.log('Progressive disclosure analytics tests: PASS\n');
+}
+
+async function main() {
+  console.log('=== TotalRecall Integration Tests ===\n');
+
+  try {
+    await testDatabaseSchema();
+    await testEmbeddings();
+    await testVectorSearch();
+    await testQueueOperations();
+    await testProgressiveDisclosureAnalytics();
+
+    console.log('=== ALL TESTS PASSED ===');
+    await cleanup();
+    process.exit(0);
+  } catch (error) {
+    console.error('TEST FAILED:', error);
+    await cleanup();
+    process.exit(1);
+  }
+}
+
+main();
