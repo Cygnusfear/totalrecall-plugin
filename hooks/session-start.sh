@@ -31,6 +31,7 @@ fi
 cat <<EOF
 {
   "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
     "additionalContext": "<total_recall_context>\n${CONTEXT_MSG}\n\nREMINDER: You MUST use the memory-protocol skill. Capture decisions with synthesis_create.\n</total_recall_context>"
   }
 }
