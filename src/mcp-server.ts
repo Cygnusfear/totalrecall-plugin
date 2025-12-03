@@ -1,8 +1,8 @@
 /**
- * Total Recall MCP Server
+ * Total Recall MCP Server - Standalone Version
  *
- * This MCP server acts as a proxy to the coordinator's Total Recall tools.
- * It provides the same tool interface but forwards calls to the HTTP API.
+ * Self-contained synthesis-first memory using sqlite-vec for vector search.
+ * No coordinator dependency.
  */
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
@@ -11,15 +11,16 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { TotalRecallClient } from './client.js';
+import { getDatabase, SynthesisDatabase } from './db.js';
+import { generateSynthesisEmbedding, generateEmbedding, initEmbeddings } from './embeddings.js';
+import type { NodeType, EdgeType } from './schema.js';
 
-const TOTALRECALL_BASE_URL = process.env.TOTALRECALL_BASE_URL || 'http://localhost:3847';
-const client = new TotalRecallClient(TOTALRECALL_BASE_URL);
+let db: SynthesisDatabase;
 
 const server = new Server(
   {
     name: 'totalrecall',
-    version: '1.0.0',
+    version: '2.0.0',
   },
   {
     capabilities: {
@@ -28,7 +29,7 @@ const server = new Server(
   }
 );
 
-// Tool definitions matching coordinator's totalrecall-tools.ts
+// Tool definitions
 const TOOLS = [
   {
     name: 'synthesis_create',
@@ -195,23 +196,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     switch (name) {
       case 'synthesis_create':
-        result = await client.create(args as unknown as Parameters<typeof client.create>[0]);
+        result = await handleSynthesisCreate(args as unknown as SynthesisCreateArgs);
         break;
 
       case 'synthesis_search':
-        result = await client.search(args as unknown as Parameters<typeof client.search>[0]);
+        result = await handleSynthesisSearch(args as unknown as SynthesisSearchArgs);
         break;
 
       case 'synthesis_unfold':
-        result = await client.unfold(args as unknown as Parameters<typeof client.unfold>[0]);
+        result = await handleSynthesisUnfold(args as unknown as SynthesisUnfoldArgs);
         break;
 
       case 'synthesis_get_context':
-        result = await client.getContext(args as unknown as Parameters<typeof client.getContext>[0]);
+        result = await handleSynthesisGetContext(args as unknown as SynthesisGetContextArgs);
         break;
 
       case 'session_graft':
-        result = await client.sessionGraft(args as unknown as Parameters<typeof client.sessionGraft>[0]);
+        result = await handleSessionGraft(args as unknown as SessionGraftArgs);
         break;
 
       default:
@@ -226,24 +227,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-
-    // Check if coordinator is unavailable
-    if (message.includes('ECONNREFUSED') || message.includes('fetch failed')) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              error: 'Coordinator unavailable',
-              message: `Could not connect to Total Recall coordinator at ${TOTALRECALL_BASE_URL}`,
-              hint: 'Start the coordinator with: cd ~/Node/dockram/coordinator && npm start',
-            }),
-          },
-        ],
-        isError: true,
-      };
-    }
-
     return {
       content: [{ type: 'text', text: JSON.stringify({ error: message }) }],
       isError: true,
@@ -251,11 +234,429 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 });
 
+// ============ Tool Handlers ============
+
+interface SynthesisCreateArgs {
+  node_type: NodeType;
+  one_liner: string;
+  summary: string;
+  full_synthesis: string;
+  session_id: string;
+  entity_name?: string;
+  temporal_context?: string;
+  related_node_ids?: string[];
+  edge_types?: EdgeType[];
+  agent_id?: string;
+  source_repo?: string;
+}
+
+async function handleSynthesisCreate(args: SynthesisCreateArgs) {
+  const now = Date.now();
+
+  // Create the node
+  const node = db.createNode({
+    node_type: args.node_type,
+    one_liner: args.one_liner,
+    summary: args.summary,
+    full_synthesis: args.full_synthesis,
+    entity_name: args.entity_name ?? null,
+    entity_aliases: null,
+    temporal_context: args.temporal_context ?? null,
+    first_seen: now,
+    last_updated: now,
+    status: null,
+    assigned_agent: args.agent_id ?? null,
+    priority: null,
+    source_session_id: args.session_id,
+    source_agent_id: args.agent_id ?? null,
+    source_repo: args.source_repo ?? null,
+  });
+
+  // Generate and store embedding
+  try {
+    const embedding = await generateSynthesisEmbedding(
+      args.one_liner,
+      args.summary,
+      args.node_type
+    );
+    db.insertEmbedding(node.id, embedding);
+  } catch (e) {
+    console.error('Failed to generate embedding:', e);
+    // Continue without embedding - search will be limited but node is created
+  }
+
+  // Create edges to related nodes
+  const createdEdges: Array<{ to_node_id: string; edge_type: EdgeType }> = [];
+  if (args.related_node_ids && args.related_node_ids.length > 0) {
+    for (const nodeId of args.related_node_ids) {
+      const exists = db.getNode(nodeId);
+      if (!exists) {
+        return {
+          error: 'Invalid related node',
+          message: `Node ${nodeId} does not exist`,
+          node_id: null,
+          edges_created: 0,
+        };
+      }
+    }
+
+    const edgeTypesList = args.edge_types || args.related_node_ids.map(() => 'relates_to' as EdgeType);
+
+    for (let i = 0; i < args.related_node_ids.length; i++) {
+      const toNodeId = args.related_node_ids[i];
+      const edgeType = edgeTypesList[i] || 'relates_to';
+
+      db.createEdge({
+        from_node_id: node.id,
+        to_node_id: toNodeId,
+        edge_type: edgeType as EdgeType,
+        weight: 1.0,
+        context: null,
+      });
+
+      createdEdges.push({ to_node_id: toNodeId, edge_type: edgeType as EdgeType });
+    }
+  }
+
+  return {
+    node_id: node.id,
+    created_at: node.created_at,
+    edges_created: createdEdges.length,
+    message: `Synthesis node created: ${args.one_liner}`,
+  };
+}
+
+interface SynthesisSearchArgs {
+  query: string;
+  max_results?: number;
+  min_score?: number;
+  node_types?: NodeType[];
+}
+
+async function handleSynthesisSearch(args: SynthesisSearchArgs) {
+  const { query, max_results = 5, min_score = 0.5, node_types } = args;
+  const startTime = Date.now();
+
+  try {
+    // Generate query embedding
+    const queryEmbedding = await generateEmbedding(query);
+
+    // Search using sqlite-vec
+    const results = db.searchByVector(queryEmbedding, max_results, min_score, node_types);
+
+    const searchLatencyMs = Date.now() - startTime;
+
+    return {
+      results: results.map((r) => ({
+        node_id: r.node_id,
+        one_liner: r.one_liner,
+        relevance_score: Math.round(r.score * 100) / 100,
+        node_type: r.node_type,
+        created_at: r.created_at,
+      })),
+      search_latency_ms: searchLatencyMs,
+      query,
+      message:
+        results.length > 0
+          ? `Found ${results.length} relevant synthesis nodes`
+          : 'No relevant synthesis nodes found. Try a different query or lower min_score.',
+      next_step: 'Use synthesis_unfold(node_id) to expand any result that looks relevant.',
+    };
+  } catch (error) {
+    return {
+      error: 'Search failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      results: [],
+      search_latency_ms: Date.now() - startTime,
+    };
+  }
+}
+
+interface SynthesisUnfoldArgs {
+  node_id: string;
+  depth?: 'summary' | 'full' | 'raw';
+}
+
+async function handleSynthesisUnfold(args: SynthesisUnfoldArgs) {
+  const { node_id, depth = 'summary' } = args;
+
+  const node = db.getNode(node_id);
+  if (!node) {
+    return {
+      error: 'Node not found',
+      node_id,
+      message: `Synthesis node ${node_id} does not exist`,
+    };
+  }
+
+  // Track access
+  db.updateNodeAccess(node_id);
+
+  // Get related nodes
+  const related = db.getRelatedNodes(node_id);
+  const related_nodes = related.map(({ node: relatedNode, edge }) => ({
+    node_id: relatedNode.id,
+    one_liner: relatedNode.one_liner,
+    edge_type: edge.edge_type,
+    edge_context: edge.context,
+  }));
+
+  const response: Record<string, unknown> = {
+    node_id: node.id,
+    node_type: node.node_type,
+    related_nodes,
+  };
+
+  if (depth === 'summary') {
+    response.one_liner = node.one_liner;
+    response.summary = node.summary;
+    response.entity_name = node.entity_name;
+    response.temporal_context = node.temporal_context;
+  } else if (depth === 'full') {
+    response.one_liner = node.one_liner;
+    response.summary = node.summary;
+    response.full_synthesis = node.full_synthesis;
+    response.entity_name = node.entity_name;
+    response.entity_aliases = node.entity_aliases ? JSON.parse(node.entity_aliases) : null;
+    response.temporal_context = node.temporal_context;
+    response.status = node.status;
+    response.assigned_agent = node.assigned_agent;
+    response.priority = node.priority;
+    response.source = {
+      session_id: node.source_session_id,
+      agent_id: node.source_agent_id,
+      repo: node.source_repo,
+    };
+    response.first_seen = node.first_seen;
+    response.last_updated = node.last_updated;
+  } else if (depth === 'raw') {
+    // Full synthesis (no raw content storage in standalone)
+    response.one_liner = node.one_liner;
+    response.summary = node.summary;
+    response.full_synthesis = node.full_synthesis;
+    response.entity_name = node.entity_name;
+    response.temporal_context = node.temporal_context;
+    response.raw_refs = []; // Not implemented in standalone
+  }
+
+  return response;
+}
+
+interface SynthesisGetContextArgs {
+  session_id?: string;
+  task_context?: string;
+  max_nodes?: number;
+  include_related?: boolean;
+}
+
+async function handleSynthesisGetContext(args: SynthesisGetContextArgs) {
+  const { session_id, task_context, max_nodes = 10, include_related = true } = args;
+
+  try {
+    let syntheses;
+
+    // If task_context provided, do semantic search; otherwise use recency
+    if (task_context) {
+      const queryEmbedding = await generateEmbedding(task_context);
+      const searchResults = db.searchByVector(queryEmbedding, max_nodes, 0.3);
+
+      // Fetch full nodes for search results
+      syntheses = searchResults
+        .map((r) => db.getNode(r.node_id))
+        .filter((n): n is NonNullable<typeof n> => n !== undefined);
+    } else {
+      syntheses = db.queryNodes({
+        session_id,
+        limit: max_nodes,
+        order_by: 'last_updated',
+      });
+    }
+
+    // Get unfoldable refs (related nodes)
+    const unfoldable_refs: Array<{ node_id: string; one_liner: string; edge_type?: string }> = [];
+
+    if (include_related && syntheses.length > 0) {
+      for (const node of syntheses.slice(0, 3)) {
+        const related = db.getRelatedNodes(node.id);
+        for (const { node: relatedNode, edge } of related) {
+          unfoldable_refs.push({
+            node_id: relatedNode.id,
+            one_liner: relatedNode.one_liner,
+            edge_type: edge.edge_type,
+          });
+        }
+      }
+    }
+
+    // Calculate temporal range
+    const timestamps = syntheses.map((s) => s.last_updated);
+    const temporal_range =
+      timestamps.length > 0
+        ? {
+            earliest: Math.min(...timestamps),
+            latest: Math.max(...timestamps),
+          }
+        : null;
+
+    return {
+      active_synthesis: syntheses.map((node) => ({
+        node_id: node.id,
+        node_type: node.node_type,
+        one_liner: node.one_liner,
+        summary: node.summary,
+        entity_name: node.entity_name,
+        temporal_context: node.temporal_context,
+        last_updated: node.last_updated,
+      })),
+      unfoldable_refs: unfoldable_refs.slice(0, 10),
+      temporal_range,
+      context_summary: {
+        total_nodes: syntheses.length,
+        task_context_used: !!task_context,
+        session_filtered: !!session_id,
+        message:
+          syntheses.length > 0
+            ? `Found ${syntheses.length} relevant synthesis nodes`
+            : 'No synthesis nodes found. Consider creating initial syntheses for this session.',
+      },
+    };
+  } catch (error) {
+    return {
+      error: 'Failed to get synthesis context',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      active_synthesis: [],
+      unfoldable_refs: [],
+      temporal_range: null,
+      context_summary: {
+        total_nodes: 0,
+        task_context_used: false,
+        session_filtered: false,
+        message: 'Error retrieving context',
+      },
+    };
+  }
+}
+
+interface SessionGraftArgs {
+  session_id: string;
+  task_context?: string;
+  source_repo?: string;
+  agent_id?: string;
+}
+
+async function handleSessionGraft(args: SessionGraftArgs) {
+  const { session_id, task_context, source_repo, agent_id } = args;
+  const now = Date.now();
+
+  try {
+    // Create a session summary node
+    const sessionNode = db.createNode({
+      node_type: 'summary',
+      one_liner: `Session: ${task_context || 'New session'}`,
+      summary: `Session grafted at ${new Date(now).toISOString()}${task_context ? ` for task: ${task_context}` : ''}`,
+      full_synthesis: `Session ${session_id} started. ${task_context ? `Task context: ${task_context}` : 'No specific task context provided.'}`,
+      entity_name: null,
+      entity_aliases: null,
+      temporal_context: `session start: ${new Date(now).toISOString()}`,
+      first_seen: now,
+      last_updated: now,
+      status: null,
+      assigned_agent: agent_id ?? null,
+      priority: null,
+      source_session_id: session_id,
+      source_agent_id: agent_id ?? null,
+      source_repo: source_repo ?? null,
+    });
+
+    // Generate embedding for session node
+    try {
+      const embedding = await generateSynthesisEmbedding(
+        sessionNode.one_liner,
+        sessionNode.summary,
+        'summary'
+      );
+      db.insertEmbedding(sessionNode.id, embedding);
+    } catch (e) {
+      console.error('Failed to generate session embedding:', e);
+    }
+
+    // Query for relevant syntheses using vector search if task_context provided
+    let relevant_syntheses;
+    if (task_context) {
+      const queryEmbedding = await generateEmbedding(task_context);
+      const searchResults = db.searchByVector(queryEmbedding, 10, 0.3);
+      relevant_syntheses = searchResults
+        .map((r) => db.getNode(r.node_id))
+        .filter((n): n is NonNullable<typeof n> => n !== undefined);
+    } else {
+      relevant_syntheses = db.queryNodes({
+        limit: 10,
+        order_by: 'last_updated',
+      });
+    }
+
+    // Create edges from session node to relevant syntheses
+    for (const synthesis of relevant_syntheses.slice(0, 5)) {
+      db.createEdge({
+        from_node_id: sessionNode.id,
+        to_node_id: synthesis.id,
+        edge_type: 'relates_to',
+        weight: 1.0,
+        context: 'session graft',
+      });
+    }
+
+    // Build grafted context response
+    const unfoldable_refs = relevant_syntheses.map((node) => ({
+      node_id: node.id,
+      one_liner: node.one_liner,
+      node_type: node.node_type,
+      last_updated: node.last_updated,
+    }));
+
+    return {
+      session_node_id: sessionNode.id,
+      grafted_context: {
+        relevant_syntheses: relevant_syntheses.map((node) => ({
+          node_id: node.id,
+          node_type: node.node_type,
+          one_liner: node.one_liner,
+          summary: node.summary,
+          entity_name: node.entity_name,
+          temporal_context: node.temporal_context,
+        })),
+        unfoldable_refs,
+      },
+      message: `Session ${session_id} grafted successfully. Loaded ${relevant_syntheses.length} relevant synthesis nodes.`,
+      next_step: 'Use synthesis_unfold to drill into specific nodes, or synthesis_create to add new understanding as you work.',
+    };
+  } catch (error) {
+    return {
+      error: 'Failed to graft session',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      session_node_id: null,
+      grafted_context: {
+        relevant_syntheses: [],
+        unfoldable_refs: [],
+      },
+    };
+  }
+}
+
 // Start the server
 async function main() {
+  // Initialize database
+  db = getDatabase();
+  console.error('Database initialized at ~/.config/totalrecall/synthesis.sqlite');
+
+  // Pre-load embedding model (async, don't block startup)
+  initEmbeddings().catch((e) => {
+    console.error('Warning: Failed to pre-load embedding model:', e);
+  });
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error('Total Recall MCP server started');
+  console.error('Total Recall MCP server started (standalone)');
 }
 
 main().catch((error) => {

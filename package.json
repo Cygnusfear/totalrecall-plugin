@@ -1,7 +1,7 @@
 {
   "name": "totalrecall-plugin",
-  "version": "1.0.0",
-  "description": "Total Recall Claude plugin - enforced synthesis-first memory system",
+  "version": "2.0.0",
+  "description": "Total Recall - Standalone synthesis-first memory for Claude Code",
   "type": "module",
   "main": "dist/mcp-server.js",
   "bin": {
@@ -10,8 +10,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc -w",
-    "start": "node dist/mcp-server.js",
-    "test": "node --test"
+    "start": "node dist/mcp-server.js"
   },
   "keywords": [
     "claude",
@@ -27,9 +26,14 @@
     "url": "https://github.com/Cygnusfear/totalrecall-plugin"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.6.0"
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@xenova/transformers": "^2.17.2",
+    "better-sqlite3": "^11.6.0",
+    "sqlite-vec": "^0.1.6",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
     "@types/node": "^20.0.0",
     "typescript": "^5.3.0"
   },
