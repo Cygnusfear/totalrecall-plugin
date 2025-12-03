@@ -1,0 +1,39 @@
+{
+  "name": "totalrecall-plugin",
+  "version": "1.0.0",
+  "description": "Total Recall Claude plugin - enforced synthesis-first memory system",
+  "type": "module",
+  "main": "dist/mcp-server.js",
+  "bin": {
+    "totalrecall": "./cli/totalrecall.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "start": "node dist/mcp-server.js",
+    "test": "node --test"
+  },
+  "keywords": [
+    "claude",
+    "mcp",
+    "memory",
+    "synthesis",
+    "total-recall"
+  ],
+  "author": "ramram <alex@manada.dev>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cygnusfear/totalrecall-plugin"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^0.6.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
