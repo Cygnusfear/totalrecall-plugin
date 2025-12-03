@@ -3,121 +3,133 @@
  * Total Recall CLI
  *
  * Commands:
- *   recent    - Get recent synthesis nodes (for hooks)
- *   search    - Search synthesis by query
- *   graft     - Graft a session to the synthesis graph
- *   create    - Create a synthesis node
- *   status    - Check coordinator status
+ *   session-graft     - Graft session to synthesis graph (for hooks)
+ *   session-complete  - Complete session with summary (for hooks)
+ *   queue-synthesis   - Queue current session for synthesis (for hooks)
+ *   backfill          - Backfill unprocessed conversations
+ *   recent            - Get recent synthesis nodes
+ *   search            - Search synthesis by query
+ *   status            - Check system status
  */
 
-import { TotalRecallClient } from '../dist/client.js';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { spawn } from 'child_process';
+import { existsSync, realpathSync } from 'fs';
 
-const client = new TotalRecallClient(process.env.TOTALRECALL_BASE_URL || 'http://localhost:3847');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(realpathSync(__filename));
+
+const [, , command, ...args] = process.argv;
+
+function runTsxCommand(scriptPath, cmdArgs) {
+  return new Promise((resolve, reject) => {
+    if (!existsSync(scriptPath)) {
+      reject(new Error(`Script not found: ${scriptPath}`));
+      return;
+    }
+
+    const child = spawn('npx', ['tsx', scriptPath, ...cmdArgs], {
+      stdio: 'inherit',
+    });
+
+    child.on('exit', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Command failed with exit code ${code}`));
+    });
+
+    child.on('error', (err) => {
+      reject(new Error(`Failed to run command: ${err.message}`));
+    });
+  });
+}
+
+function runBackground(scriptPath, cmdArgs) {
+  const child = spawn('npx', ['tsx', scriptPath, ...cmdArgs], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  console.log('Started in background...');
+}
 
 async function main() {
-  const [, , command, ...args] = process.argv;
+  const srcDir = join(__dirname, '..', 'src');
 
   try {
     switch (command) {
-      case 'recent': {
-        const limit = parseInt(args.find(a => a.startsWith('--limit='))?.split('=')[1] || '5');
-        const format = args.find(a => a.startsWith('--format='))?.split('=')[1] || 'text';
+      case 'session-graft':
+        await runTsxCommand(join(srcDir, 'cli', 'session-graft.ts'), args);
+        break;
 
-        const result = await client.getContext({ max_nodes: limit });
+      case 'session-complete':
+        await runTsxCommand(join(srcDir, 'cli', 'session-complete.ts'), args);
+        break;
 
-        if (format === 'json') {
-          console.log(JSON.stringify(result.active_synthesis || []));
+      case 'queue-synthesis':
+        await runTsxCommand(join(srcDir, 'cli', 'queue-synthesis.ts'), args);
+        break;
+
+      case 'backfill':
+        if (args.includes('--background')) {
+          const filteredArgs = args.filter((a) => a !== '--background');
+          runBackground(join(srcDir, 'cli', 'backfill.ts'), filteredArgs);
         } else {
-          for (const node of result.active_synthesis || []) {
-            console.log(`[${node.node_type}] ${node.one_liner}`);
-          }
+          await runTsxCommand(join(srcDir, 'cli', 'backfill.ts'), args);
         }
         break;
-      }
 
-      case 'search': {
-        const query = args.filter(a => !a.startsWith('--')).join(' ');
-        if (!query) {
-          console.error('Usage: totalrecall search <query>');
-          process.exit(1);
-        }
-
-        const result = await client.search({ query, max_results: 5 });
-
-        for (const node of result.results || []) {
-          console.log(`[${node.node_type}] ${Math.round(node.relevance_score * 100)}% - ${node.one_liner}`);
-        }
+      case 'recent':
+        await runTsxCommand(join(srcDir, 'cli', 'recent.ts'), args);
         break;
-      }
 
-      case 'graft': {
-        const sessionId = args.find(a => a.startsWith('--session='))?.split('=')[1];
-        const taskContext = args.filter(a => !a.startsWith('--')).join(' ');
-
-        const result = await client.sessionGraft({
-          session_id: sessionId || `cli-${Date.now()}`,
-          task_context: taskContext || undefined
-        });
-
-        console.log(`Grafted session: ${result.session_node_id}`);
-        console.log(`Loaded ${result.grafted_context?.relevant_syntheses?.length || 0} synthesis nodes`);
+      case 'search':
+        await runTsxCommand(join(srcDir, 'cli', 'search.ts'), args);
         break;
-      }
 
-      case 'create': {
-        const nodeType = args.find(a => a.startsWith('--type='))?.split('=')[1] || 'learning';
-        const oneLiner = args.filter(a => !a.startsWith('--')).join(' ');
-
-        if (!oneLiner) {
-          console.error('Usage: totalrecall create --type=decision "One liner description"');
-          process.exit(1);
-        }
-
-        const result = await client.create({
-          node_type: nodeType,
-          one_liner: oneLiner,
-          summary: oneLiner,
-          full_synthesis: oneLiner,
-          session_id: `cli-${Date.now()}`
-        });
-
-        console.log(`Created: ${result.node_id}`);
+      case 'status':
+        await runTsxCommand(join(srcDir, 'cli', 'status.ts'), args);
         break;
-      }
 
-      case 'status': {
-        const health = await client.healthCheck();
-        console.log(`Coordinator: ${health.ok ? 'online' : 'offline'}`);
-        if (health.version) console.log(`Version: ${health.version}`);
-        break;
-      }
-
-      default:
+      case '--help':
+      case '-h':
+      case undefined:
         console.log(`Total Recall CLI
 
 Usage: totalrecall <command> [options]
 
-Commands:
-  recent [--limit=N] [--format=json|text]  Get recent synthesis nodes
-  search <query>                           Search synthesis by semantic similarity
-  graft [--session=ID] [task context]      Graft session to synthesis graph
-  create --type=TYPE "one liner"           Create a synthesis node
-  status                                   Check coordinator status
+Hook Commands (called automatically):
+  session-graft       Graft session to synthesis graph
+  session-complete    Complete session with summary
+  queue-synthesis     Queue current session for background synthesis
+  backfill            Backfill unprocessed conversations
+                      Use --background to run in background
+
+User Commands:
+  recent              Get recent synthesis nodes
+                      --limit=N  Max nodes (default: 5)
+                      --format=json|text
+  search <query>      Search synthesis by semantic similarity
+  status              Check system status
 
 Environment:
-  TOTALRECALL_BASE_URL  Coordinator URL (default: http://localhost:3847)
+  ANTHROPIC_API_KEY   Required for background synthesis
+  TRANSCRIPT_PATH     Set by Claude Code hooks
 `);
         break;
+
+      default:
+        console.error(`Unknown command: ${command}`);
+        console.error('Try: totalrecall --help');
+        process.exit(1);
     }
   } catch (error) {
-    if (error.code === 'ECONNREFUSED') {
-      console.error('ERROR: Coordinator not available at', process.env.TOTALRECALL_BASE_URL || 'http://localhost:3847');
-      console.error('Start the coordinator with: cd ~/Node/dockram/coordinator && npm start');
-    } else {
-      console.error('ERROR:', error.message);
-    }
+    console.error(`Error: ${error.message}`);
     process.exit(1);
   }
 }
 
-main();
+main().catch((error) => {
+  console.error(`Unexpected error: ${error.message}`);
+  process.exit(1);
+});

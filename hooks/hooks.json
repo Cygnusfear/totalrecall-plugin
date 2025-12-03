@@ -6,19 +6,35 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh"
+            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall session-graft",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall backfill --background",
+            "async": true
           }
         ]
       }
     ],
-    "Notification": [
+    "Stop": [
       {
-        "matcher": ".*",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-summary.sh",
+            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall queue-synthesis",
             "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall session-complete",
+            "timeout": 30
           }
         ]
       }
