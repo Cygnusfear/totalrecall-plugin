@@ -8,7 +8,19 @@ import { mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { randomUUID } from 'crypto';
 import { getDbPath } from './paths.js';
-import type { SynthesisNode, SynthesisEdge, NodeType, EdgeType, SearchResult } from './schema.js';
+import type {
+  SynthesisNode,
+  SynthesisEdge,
+  NodeType,
+  EdgeType,
+  SearchResult,
+  RawContent,
+  SynthesisQueue,
+  SynthesisQueueStatus,
+  SynthesisQueueChunkType,
+  ProgressiveDisclosureEvent,
+  ProgressiveDisclosureEventType
+} from './schema.js';
 
 export class SynthesisDatabase {
   private db: Database.Database;
@@ -21,6 +33,28 @@ export class SynthesisDatabase {
     sqliteVec.load(this.db);
     this.db.pragma('journal_mode = WAL');
     this.initSchema();
+  }
+
+  // Retry wrapper for SQLite operations with exponential backoff
+  private withRetry<T>(fn: () => T, maxRetries: number = 5): T {
+    for (let i = 0; i < maxRetries; i++) {
+      try {
+        return fn();
+      } catch (e: unknown) {
+        const error = e as { code?: string };
+        if (error.code === 'SQLITE_BUSY' && i < maxRetries - 1) {
+          const backoff = 50 * Math.pow(2, i); // 50ms, 100ms, 200ms, 400ms, 800ms
+          // Synchronous sleep using busy-wait (better-sqlite3 is synchronous)
+          const start = Date.now();
+          while (Date.now() - start < backoff) {
+            // busy wait
+          }
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw new Error('Retry exhausted');
   }
 
   private initSchema(): void {
@@ -80,6 +114,80 @@ export class SynthesisDatabase {
       CREATE INDEX IF NOT EXISTS idx_nodes_type ON synthesis_nodes(node_type);
       CREATE INDEX IF NOT EXISTS idx_edges_from ON synthesis_edges(from_node_id);
       CREATE INDEX IF NOT EXISTS idx_edges_to ON synthesis_edges(to_node_id);
+    `);
+
+    // Raw content storage for conversation chunks
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS raw_content (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        synthesis_node_id TEXT,
+        content_type TEXT NOT NULL CHECK(content_type IN ('message', 'tool_call', 'tool_result', 'conversation')),
+        content TEXT NOT NULL,
+        agent_id TEXT,
+        timestamp INTEGER NOT NULL,
+        message_index INTEGER,
+        created_at INTEGER NOT NULL,
+        FOREIGN KEY (synthesis_node_id) REFERENCES synthesis_nodes(id) ON DELETE SET NULL
+      )
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_raw_content_session_time ON raw_content(session_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_raw_content_synthesis_time ON raw_content(synthesis_node_id, timestamp ASC);
+      CREATE INDEX IF NOT EXISTS idx_raw_content_timestamp ON raw_content(timestamp DESC);
+    `);
+
+    // Synthesis queue for background processing
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS synthesis_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        agent_id TEXT,
+        chunk_type TEXT NOT NULL CHECK(chunk_type IN ('session_start', 'session_chunk', 'session_end')),
+        raw_content_ids TEXT NOT NULL,
+        context TEXT,
+        message_count INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+        retry_count INTEGER DEFAULT 0,
+        error TEXT,
+        synthesis_node_id TEXT,
+        created_at INTEGER NOT NULL,
+        started_at INTEGER,
+        completed_at INTEGER,
+        FOREIGN KEY (synthesis_node_id) REFERENCES synthesis_nodes(id) ON DELETE SET NULL
+      )
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_synthesis_queue_status ON synthesis_queue(status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_synthesis_queue_session ON synthesis_queue(session_id);
+      CREATE INDEX IF NOT EXISTS idx_synthesis_queue_session_time ON synthesis_queue(session_id, created_at DESC);
+    `);
+
+    // Progressive disclosure analytics
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS progressive_disclosure_events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT NOT NULL CHECK(event_type IN ('search', 'inject', 'expand', 'skip')),
+        session_id TEXT,
+        agent_id TEXT,
+        query_text TEXT,
+        search_latency_ms INTEGER,
+        results_count INTEGER,
+        node_ids TEXT,
+        injection_tokens INTEGER,
+        expanded_node_id TEXT,
+        expansion_tokens INTEGER,
+        message_tokens INTEGER,
+        created_at INTEGER NOT NULL
+      )
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_pd_events_type ON progressive_disclosure_events(event_type);
+      CREATE INDEX IF NOT EXISTS idx_pd_events_session ON progressive_disclosure_events(session_id);
+      CREATE INDEX IF NOT EXISTS idx_pd_events_created ON progressive_disclosure_events(created_at DESC);
     `);
   }
 
@@ -287,6 +395,264 @@ export class SynthesisDatabase {
         created_at: row.edge_created_at
       } as SynthesisEdge
     }));
+  }
+
+  // ============ Raw Content Operations ============
+
+  createRawContent(content: Omit<RawContent, 'created_at'>): RawContent {
+    const now = Date.now();
+
+    const stmt = this.db.prepare(`
+      INSERT INTO raw_content (
+        id, session_id, synthesis_node_id, content_type, content,
+        agent_id, timestamp, message_index, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.withRetry(() => stmt.run(
+      content.id,
+      content.session_id,
+      content.synthesis_node_id ?? null,
+      content.content_type,
+      content.content,
+      content.agent_id ?? null,
+      content.timestamp,
+      content.message_index ?? null,
+      now
+    ));
+
+    return { ...content, created_at: now };
+  }
+
+  getRawContentBySession(sessionId: string, limit: number = 100): RawContent[] {
+    return this.db.prepare(`
+      SELECT * FROM raw_content
+      WHERE session_id = ?
+      ORDER BY timestamp DESC
+      LIMIT ?
+    `).all(sessionId, limit) as RawContent[];
+  }
+
+  getRawContentBySynthesis(synthesisNodeId: string): RawContent[] {
+    return this.db.prepare(`
+      SELECT * FROM raw_content
+      WHERE synthesis_node_id = ?
+      ORDER BY timestamp ASC
+    `).all(synthesisNodeId) as RawContent[];
+  }
+
+  getRawContentByIds(ids: string[]): RawContent[] {
+    if (ids.length === 0) return [];
+    const placeholders = ids.map(() => '?').join(',');
+    return this.db.prepare(`
+      SELECT * FROM raw_content
+      WHERE id IN (${placeholders})
+      ORDER BY timestamp ASC
+    `).all(...ids) as RawContent[];
+  }
+
+  linkRawContentToSynthesis(rawContentIds: string[], synthesisNodeId: string): void {
+    const stmt = this.db.prepare(`
+      UPDATE raw_content
+      SET synthesis_node_id = ?
+      WHERE id = ?
+    `);
+
+    for (const id of rawContentIds) {
+      this.withRetry(() => stmt.run(synthesisNodeId, id));
+    }
+  }
+
+  // ============ Synthesis Queue Operations ============
+
+  createSynthesisQueueItem(item: Omit<SynthesisQueue, 'id' | 'started_at' | 'completed_at'>): SynthesisQueue {
+    const stmt = this.db.prepare(`
+      INSERT INTO synthesis_queue (
+        session_id, agent_id, chunk_type, raw_content_ids, context,
+        message_count, status, retry_count, error, synthesis_node_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = this.withRetry(() => stmt.run(
+      item.session_id,
+      item.agent_id ?? null,
+      item.chunk_type,
+      item.raw_content_ids,
+      item.context ?? null,
+      item.message_count ?? null,
+      item.status,
+      item.retry_count,
+      item.error ?? null,
+      item.synthesis_node_id ?? null,
+      item.created_at
+    ));
+
+    return {
+      id: result.lastInsertRowid as number,
+      ...item,
+      started_at: null,
+      completed_at: null
+    };
+  }
+
+  getPendingSynthesisQueue(filters: { limit?: number } = {}): SynthesisQueue[] {
+    const { limit = 10 } = filters;
+    return this.db.prepare(`
+      SELECT * FROM synthesis_queue
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT ?
+    `).all(limit) as SynthesisQueue[];
+  }
+
+  getSynthesisQueueItems(filters: {
+    session_id?: string;
+    status?: SynthesisQueueStatus;
+    limit?: number;
+  }): SynthesisQueue[] {
+    const { session_id, status, limit = 50 } = filters;
+
+    let query = 'SELECT * FROM synthesis_queue WHERE 1=1';
+    const params: unknown[] = [];
+
+    if (session_id) {
+      query += ' AND session_id = ?';
+      params.push(session_id);
+    }
+
+    if (status) {
+      query += ' AND status = ?';
+      params.push(status);
+    }
+
+    query += ' ORDER BY created_at DESC LIMIT ?';
+    params.push(limit);
+
+    return this.db.prepare(query).all(...params) as SynthesisQueue[];
+  }
+
+  updateSynthesisQueueStatus(
+    id: number,
+    status: SynthesisQueueStatus,
+    synthesisNodeId?: string | null,
+    error?: string | null
+  ): void {
+    const now = Date.now();
+    const updates: string[] = ['status = ?'];
+    const values: unknown[] = [status];
+
+    if (status === 'processing') {
+      updates.push('started_at = ?');
+      values.push(now);
+    } else if (status === 'completed' || status === 'failed') {
+      updates.push('completed_at = ?');
+      values.push(now);
+    }
+
+    if (synthesisNodeId !== undefined) {
+      updates.push('synthesis_node_id = ?');
+      values.push(synthesisNodeId);
+    }
+
+    if (error !== undefined) {
+      updates.push('error = ?');
+      values.push(error);
+    }
+
+    values.push(id);
+
+    const stmt = this.db.prepare(`
+      UPDATE synthesis_queue
+      SET ${updates.join(', ')}
+      WHERE id = ?
+    `);
+    this.withRetry(() => stmt.run(...values));
+  }
+
+  incrementSynthesisQueueRetry(id: number): void {
+    const stmt = this.db.prepare(`
+      UPDATE synthesis_queue
+      SET retry_count = retry_count + 1, status = 'pending'
+      WHERE id = ?
+    `);
+    this.withRetry(() => stmt.run(id));
+  }
+
+  // ============ Progressive Disclosure Operations ============
+
+  createProgressiveDisclosureEvent(event: Omit<ProgressiveDisclosureEvent, 'id' | 'created_at'>): ProgressiveDisclosureEvent {
+    const now = Date.now();
+    const stmt = this.db.prepare(`
+      INSERT INTO progressive_disclosure_events (
+        event_type, session_id, agent_id, query_text, search_latency_ms,
+        results_count, node_ids, injection_tokens, expanded_node_id,
+        expansion_tokens, message_tokens, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = this.withRetry(() => stmt.run(
+      event.event_type,
+      event.session_id ?? null,
+      event.agent_id ?? null,
+      event.query_text ?? null,
+      event.search_latency_ms ?? null,
+      event.results_count ?? null,
+      event.node_ids ?? null,
+      event.injection_tokens ?? null,
+      event.expanded_node_id ?? null,
+      event.expansion_tokens ?? null,
+      event.message_tokens ?? null,
+      now
+    ));
+
+    return {
+      id: result.lastInsertRowid as number,
+      ...event,
+      created_at: now
+    };
+  }
+
+  getProgressiveDisclosureAnalytics(startTime: number, endTime: number): {
+    totalSearches: number;
+    totalInjections: number;
+    totalExpansions: number;
+    avgSearchLatency: number;
+    expansionRate: number;
+    totalInjectionTokens: number;
+    totalExpansionTokens: number;
+  } {
+    const stats = this.db.prepare(`
+      SELECT
+        COUNT(CASE WHEN event_type = 'search' THEN 1 END) as total_searches,
+        COUNT(CASE WHEN event_type = 'inject' THEN 1 END) as total_injections,
+        COUNT(CASE WHEN event_type = 'expand' THEN 1 END) as total_expansions,
+        AVG(CASE WHEN event_type = 'search' THEN search_latency_ms END) as avg_search_latency,
+        SUM(CASE WHEN event_type = 'inject' THEN injection_tokens ELSE 0 END) as total_injection_tokens,
+        SUM(CASE WHEN event_type = 'expand' THEN expansion_tokens ELSE 0 END) as total_expansion_tokens
+      FROM progressive_disclosure_events
+      WHERE created_at BETWEEN ? AND ?
+    `).get(startTime, endTime) as {
+      total_searches: number;
+      total_injections: number;
+      total_expansions: number;
+      avg_search_latency: number | null;
+      total_injection_tokens: number | null;
+      total_expansion_tokens: number | null;
+    };
+
+    const expansionRate = stats.total_injections > 0
+      ? stats.total_expansions / stats.total_injections
+      : 0;
+
+    return {
+      totalSearches: stats.total_searches || 0,
+      totalInjections: stats.total_injections || 0,
+      totalExpansions: stats.total_expansions || 0,
+      avgSearchLatency: stats.avg_search_latency || 0,
+      expansionRate,
+      totalInjectionTokens: stats.total_injection_tokens || 0,
+      totalExpansionTokens: stats.total_expansion_tokens || 0
+    };
   }
 
   // ============ Utility ============

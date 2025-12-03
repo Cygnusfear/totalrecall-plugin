@@ -45,3 +45,58 @@ export interface SearchResult {
   node_type: NodeType;
   created_at: number;
 }
+
+// ============ NEW TYPES FOR FEATURE PARITY ============
+
+// Raw content storage for conversation chunks
+export interface RawContent {
+  id: string;
+  session_id: string;
+  synthesis_node_id: string | null;
+  content_type: 'message' | 'tool_call' | 'tool_result' | 'conversation';
+  content: string;
+  agent_id: string | null;
+  timestamp: number;
+  message_index: number | null;
+  created_at: number;
+}
+
+// Synthesis queue for background processing
+export type SynthesisQueueChunkType = 'session_start' | 'session_chunk' | 'session_end';
+export type SynthesisQueueStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
+export interface SynthesisQueue {
+  id: number;
+  session_id: string;
+  agent_id: string | null;
+  chunk_type: SynthesisQueueChunkType;
+  raw_content_ids: string; // JSON array of raw_content IDs
+  context: string | null;
+  message_count: number | null;
+  status: SynthesisQueueStatus;
+  retry_count: number;
+  error: string | null;
+  synthesis_node_id: string | null;
+  created_at: number;
+  started_at: number | null;
+  completed_at: number | null;
+}
+
+// Progressive disclosure analytics
+export type ProgressiveDisclosureEventType = 'search' | 'inject' | 'expand' | 'skip';
+
+export interface ProgressiveDisclosureEvent {
+  id: number;
+  event_type: ProgressiveDisclosureEventType;
+  session_id: string | null;
+  agent_id: string | null;
+  query_text: string | null;
+  search_latency_ms: number | null;
+  results_count: number | null;
+  node_ids: string | null; // JSON array
+  injection_tokens: number | null;
+  expanded_node_id: string | null;
+  expansion_tokens: number | null;
+  message_tokens: number | null;
+  created_at: number;
+}
