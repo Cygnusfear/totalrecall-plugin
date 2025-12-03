@@ -13,9 +13,12 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { getDatabase, SynthesisDatabase } from './db.js';
 import { generateSynthesisEmbedding, generateEmbedding, initEmbeddings } from './embeddings.js';
+import { SynthesisWorker } from './synthesis-worker.js';
+import { LLMSynthesisClient } from './llm-synthesis.js';
 import type { NodeType, EdgeType } from './schema.js';
 
 let db: SynthesisDatabase;
+let synthesisWorker: SynthesisWorker | null = null;
 
 const server = new Server(
   {
@@ -957,6 +960,23 @@ async function main() {
   initEmbeddings().catch((e) => {
     console.error('Warning: Failed to pre-load embedding model:', e);
   });
+
+  // Initialize synthesis worker if API key is available
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (apiKey) {
+    const llmClient = new LLMSynthesisClient(apiKey);
+    synthesisWorker = new SynthesisWorker(db, llmClient, {
+      pollInterval: 30000, // 30 seconds
+      batchSize: 5,
+      maxRetries: 3,
+    });
+    synthesisWorker.start().catch((e) => {
+      console.error('Failed to start synthesis worker:', e);
+    });
+    console.error('Synthesis worker started (ANTHROPIC_API_KEY detected)');
+  } else {
+    console.error('Synthesis worker disabled (no ANTHROPIC_API_KEY)');
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
