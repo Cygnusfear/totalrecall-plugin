@@ -97,6 +97,14 @@ Returns expandable references sorted by relevance score. Use synthesis_unfold to
           items: { type: 'string' },
           description: 'Filter by node types',
         },
+        after: {
+          type: 'string',
+          description: 'Only nodes after this date (YYYY-MM-DD)',
+        },
+        before: {
+          type: 'string',
+          description: 'Only nodes before this date (YYYY-MM-DD)',
+        },
       },
       required: ['query'],
     },
@@ -180,6 +188,90 @@ This is your FIRST action in any new session or task. It:
       required: ['session_id'],
     },
   },
+  {
+    name: 'synthesis_capture_chunk',
+    description: `Queue conversation content for background synthesis by Haiku. Use at natural breakpoints in your work.
+
+PROACTIVELY call this when:
+- Completing a task or milestone (chunk_type: "session_chunk")
+- Ending a session (chunk_type: "session_end")
+- Topic changes significantly (chunk_type: "session_chunk")
+
+Note: Most synthesis happens automatically. Use this for explicit queuing when you want to ensure specific content is synthesized.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: {
+          type: 'string',
+          description: 'Session ID for this conversation chunk',
+        },
+        agent_id: {
+          type: 'string',
+          description: 'Agent ID if applicable',
+        },
+        chunk_type: {
+          type: 'string',
+          enum: ['session_start', 'session_chunk', 'session_end'],
+          description: 'Type of chunk: session_start, session_chunk, or session_end',
+        },
+        raw_content_ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Array of raw_content IDs to synthesize',
+        },
+        context: {
+          type: 'string',
+          description: 'Context for synthesis (e.g., "implementing auth")',
+        },
+      },
+      required: ['session_id', 'chunk_type', 'raw_content_ids'],
+    },
+  },
+  {
+    name: 'synthesis_queue_status',
+    description: `Check background synthesis queue status. Shows pending, processing, completed, and failed items.
+
+Use this to:
+- Verify your synthesis_capture_chunk calls were queued
+- Debug synthesis failures
+- Monitor system health`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: {
+          type: 'string',
+          description: 'Filter by session ID (optional)',
+        },
+        status: {
+          type: 'string',
+          enum: ['pending', 'processing', 'completed', 'failed'],
+          description: 'Filter by status (optional)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum items to return (default: 20)',
+        },
+      },
+    },
+  },
+  {
+    name: 'progressive_disclosure_stats',
+    description: `Get progressive disclosure analytics to measure context savings and expansion rate.
+
+Use this to monitor performance:
+- Expansion rate: % of injected refs that were expanded (target: >50%)
+- Search latency: average time for vector search (target: <100ms)
+- Token savings: injection tokens vs expansion tokens`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        hours: {
+          type: 'number',
+          description: 'Time range in hours to analyze (default: 24)',
+        },
+      },
+    },
+  },
 ];
 
 // List tools handler
@@ -213,6 +305,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'session_graft':
         result = await handleSessionGraft(args as unknown as SessionGraftArgs);
+        break;
+
+      case 'synthesis_capture_chunk':
+        result = await handleSynthesisCaptureChunk(args as unknown as SynthesisCaptureChunkArgs);
+        break;
+
+      case 'synthesis_queue_status':
+        result = await handleSynthesisQueueStatus(args as unknown as SynthesisQueueStatusArgs);
+        break;
+
+      case 'progressive_disclosure_stats':
+        result = await handleProgressiveDisclosureStats(args as unknown as ProgressiveDisclosureStatsArgs);
         break;
 
       default:
@@ -331,20 +435,54 @@ interface SynthesisSearchArgs {
   max_results?: number;
   min_score?: number;
   node_types?: NodeType[];
+  after?: string;
+  before?: string;
 }
 
 async function handleSynthesisSearch(args: SynthesisSearchArgs) {
-  const { query, max_results = 5, min_score = 0.5, node_types } = args;
+  const { query, max_results = 5, min_score = 0.5, node_types, after, before } = args;
   const startTime = Date.now();
 
   try {
     // Generate query embedding
     const queryEmbedding = await generateEmbedding(query);
 
-    // Search using sqlite-vec
-    const results = db.searchByVector(queryEmbedding, max_results, min_score, node_types);
+    // Search using sqlite-vec (over-fetch to account for date filtering)
+    let results = db.searchByVector(queryEmbedding, max_results * 2, min_score, node_types);
+
+    // Apply date filters
+    if (after || before) {
+      const afterTs = after ? new Date(after).getTime() : 0;
+      const beforeTs = before ? new Date(before).getTime() : Infinity;
+
+      results = results.filter((r) => {
+        return r.created_at >= afterTs && r.created_at <= beforeTs;
+      });
+    }
+
+    // Limit results
+    results = results.slice(0, max_results);
 
     const searchLatencyMs = Date.now() - startTime;
+
+    // Log search event for analytics
+    try {
+      db.createProgressiveDisclosureEvent({
+        event_type: 'search',
+        session_id: null,
+        agent_id: null,
+        query_text: query,
+        search_latency_ms: searchLatencyMs,
+        results_count: results.length,
+        node_ids: JSON.stringify(results.map((r) => r.node_id)),
+        injection_tokens: null,
+        expanded_node_id: null,
+        expansion_tokens: null,
+        message_tokens: null,
+      });
+    } catch {
+      // Silently fail on analytics
+    }
 
     return {
       results: results.map((r) => ({
@@ -639,6 +777,172 @@ async function handleSessionGraft(args: SessionGraftArgs) {
         relevant_syntheses: [],
         unfoldable_refs: [],
       },
+    };
+  }
+}
+
+interface SynthesisCaptureChunkArgs {
+  session_id: string;
+  agent_id?: string;
+  chunk_type: 'session_start' | 'session_chunk' | 'session_end';
+  raw_content_ids: string[];
+  context?: string;
+}
+
+async function handleSynthesisCaptureChunk(args: SynthesisCaptureChunkArgs) {
+  const { session_id, agent_id, chunk_type, raw_content_ids, context } = args;
+
+  try {
+    if (raw_content_ids.length === 0) {
+      return {
+        error: 'Empty chunk',
+        message: 'No raw_content_ids provided',
+        queue_item_id: null,
+      };
+    }
+
+    const queueItem = db.createSynthesisQueueItem({
+      session_id,
+      agent_id: agent_id ?? null,
+      chunk_type,
+      raw_content_ids: JSON.stringify(raw_content_ids),
+      context: context ?? null,
+      message_count: raw_content_ids.length,
+      status: 'pending',
+      retry_count: 0,
+      error: null,
+      synthesis_node_id: null,
+      created_at: Date.now(),
+    });
+
+    return {
+      queue_item_id: queueItem.id,
+      message: `Queued ${raw_content_ids.length} messages for synthesis`,
+      chunk_type,
+      status: 'pending',
+      processing: 'Background worker will process this chunk asynchronously',
+    };
+  } catch (error) {
+    return {
+      error: 'Failed to queue synthesis',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      queue_item_id: null,
+    };
+  }
+}
+
+interface SynthesisQueueStatusArgs {
+  session_id?: string;
+  status?: 'pending' | 'processing' | 'completed' | 'failed';
+  limit?: number;
+}
+
+async function handleSynthesisQueueStatus(args: SynthesisQueueStatusArgs) {
+  const { session_id, status, limit = 20 } = args;
+
+  try {
+    const filters: {
+      session_id?: string;
+      status?: 'pending' | 'processing' | 'completed' | 'failed';
+      limit: number;
+    } = { limit };
+
+    if (session_id) filters.session_id = session_id;
+    if (status) filters.status = status;
+
+    const items = db.getSynthesisQueueItems(filters);
+
+    // Calculate stats
+    const allItems = session_id
+      ? db.getSynthesisQueueItems({ session_id, limit: 1000 })
+      : items;
+
+    const stats = {
+      total: allItems.length,
+      pending: allItems.filter((i) => i.status === 'pending').length,
+      processing: allItems.filter((i) => i.status === 'processing').length,
+      completed: allItems.filter((i) => i.status === 'completed').length,
+      failed: allItems.filter((i) => i.status === 'failed').length,
+    };
+
+    return {
+      stats,
+      items: items.map((i) => ({
+        id: i.id,
+        session_id: i.session_id,
+        agent_id: i.agent_id,
+        chunk_type: i.chunk_type,
+        message_count: i.message_count,
+        status: i.status,
+        retry_count: i.retry_count,
+        synthesis_node_id: i.synthesis_node_id,
+        error: i.error,
+        created_at: i.created_at,
+        started_at: i.started_at,
+        completed_at: i.completed_at,
+        processing_time_ms:
+          i.started_at && i.completed_at ? i.completed_at - i.started_at : null,
+      })),
+      message: `Found ${items.length} queue items${session_id ? ` for session ${session_id}` : ''}${status ? ` with status ${status}` : ''}`,
+    };
+  } catch (error) {
+    return {
+      error: 'Failed to get queue status',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      stats: { total: 0, pending: 0, processing: 0, completed: 0, failed: 0 },
+      items: [],
+    };
+  }
+}
+
+interface ProgressiveDisclosureStatsArgs {
+  hours?: number;
+}
+
+async function handleProgressiveDisclosureStats(args: ProgressiveDisclosureStatsArgs) {
+  const hours = args.hours ?? 24;
+  const now = Date.now();
+  const startTime = now - hours * 60 * 60 * 1000;
+
+  try {
+    const stats = db.getProgressiveDisclosureAnalytics(startTime, now);
+
+    const contextSavings =
+      stats.totalInjectionTokens > 0
+        ? Math.round(
+            (1 - stats.totalExpansionTokens / (stats.totalInjectionTokens * 20)) * 100
+          )
+        : 0;
+
+    return {
+      time_range: {
+        start: new Date(startTime).toISOString(),
+        end: new Date(now).toISOString(),
+        hours,
+      },
+      search_performance: {
+        total_searches: stats.totalSearches,
+        avg_latency_ms: Math.round(stats.avgSearchLatency),
+        target_met: stats.avgSearchLatency < 100,
+      },
+      expansion_metrics: {
+        total_injections: stats.totalInjections,
+        total_expansions: stats.totalExpansions,
+        expansion_rate: Math.round(stats.expansionRate * 100),
+        expansion_rate_target: 50,
+        target_met: stats.expansionRate >= 0.5,
+      },
+      token_metrics: {
+        injection_tokens: stats.totalInjectionTokens,
+        expansion_tokens: stats.totalExpansionTokens,
+        estimated_savings_percent: contextSavings,
+      },
+      message: `Stats for last ${hours} hours: ${stats.totalSearches} searches, ${Math.round(stats.expansionRate * 100)}% expansion rate, ${Math.round(stats.avgSearchLatency)}ms avg latency`,
+    };
+  } catch (error) {
+    return {
+      error: 'Failed to get stats',
+      message: error instanceof Error ? error.message : 'Unknown error',
     };
   }
 }
