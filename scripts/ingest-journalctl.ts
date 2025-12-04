@@ -1,16 +1,31 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env bun
 /**
  * Ingest journalctl logs into Total Recall
  *
  * Usage:
  *   # On bhakti, pipe journalctl to this script:
- *   sudo journalctl -u ramdock-coordinator --since "10:30" --until "14:40" | npx tsx scripts/ingest-journalctl.ts
+ *   sudo journalctl -u ramdock-coordinator --since "10:30" --until "14:40" | bun scripts/ingest-journalctl.ts
  *
  *   # Or from local with SSH:
- *   ssh ramram@bhakti 'sudo journalctl -u ramdock-coordinator --since "10:30" --until "14:40"' | npx tsx scripts/ingest-journalctl.ts --remote
+ *   ssh ramram@bhakti 'sudo journalctl -u ramdock-coordinator --since "10:30" --until "14:40"' | bun scripts/ingest-journalctl.ts --remote
  */
 
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
+import { existsSync } from 'fs';
+
+// macOS requires custom SQLite for extension support
+const macOSSqlitePaths = [
+  '/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib',
+  '/usr/local/opt/sqlite/lib/libsqlite3.dylib',
+];
+if (process.platform === 'darwin') {
+  for (const p of macOSSqlitePaths) {
+    if (existsSync(p)) {
+      Database.setCustomSQLite(p);
+      break;
+    }
+  }
+}
 import { createInterface } from 'readline';
 import { randomUUID } from 'crypto';
 import { homedir } from 'os';

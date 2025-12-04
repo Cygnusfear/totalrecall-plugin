@@ -1,9 +1,9 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env bun
 /**
  * Migration script: Coordinator DB -> Plugin DB
  *
  * Usage:
- *   npx tsx scripts/migrate-from-coordinator.ts /path/to/coordinator.db
+ *   bun scripts/migrate-from-coordinator.ts /path/to/coordinator.db
  *
  * What it does:
  *   1. Copies synthesis_nodes (without embedding column)
@@ -14,7 +14,7 @@
  *   6. Regenerates embeddings for all nodes
  */
 
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { getDatabase } from '../src/db.js';
 import { generateSynthesisEmbedding, initEmbeddings } from '../src/embeddings.js';
 

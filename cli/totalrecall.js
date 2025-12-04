@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Total Recall CLI
  *
@@ -22,14 +22,14 @@ const __dirname = dirname(realpathSync(__filename));
 
 const [, , command, ...args] = process.argv;
 
-function runTsxCommand(scriptPath, cmdArgs) {
+function runCommand(scriptPath, cmdArgs) {
   return new Promise((resolve, reject) => {
     if (!existsSync(scriptPath)) {
       reject(new Error(`Script not found: ${scriptPath}`));
       return;
     }
 
-    const child = spawn('bunx', ['tsx', scriptPath, ...cmdArgs], {
+    const child = spawn('bun', [scriptPath, ...cmdArgs], {
       stdio: 'inherit',
     });
 
@@ -45,7 +45,7 @@ function runTsxCommand(scriptPath, cmdArgs) {
 }
 
 function runBackground(scriptPath, cmdArgs) {
-  const child = spawn('bunx', ['tsx', scriptPath, ...cmdArgs], {
+  const child = spawn('bun', [scriptPath, ...cmdArgs], {
     detached: true,
     stdio: 'ignore',
   });
@@ -59,15 +59,15 @@ async function main() {
   try {
     switch (command) {
       case 'session-graft':
-        await runTsxCommand(join(srcDir, 'cli', 'session-graft.ts'), args);
+        await runCommand(join(srcDir, 'cli', 'session-graft.ts'), args);
         break;
 
       case 'session-complete':
-        await runTsxCommand(join(srcDir, 'cli', 'session-complete.ts'), args);
+        await runCommand(join(srcDir, 'cli', 'session-complete.ts'), args);
         break;
 
       case 'queue-synthesis':
-        await runTsxCommand(join(srcDir, 'cli', 'queue-synthesis.ts'), args);
+        await runCommand(join(srcDir, 'cli', 'queue-synthesis.ts'), args);
         break;
 
       case 'backfill':
@@ -75,25 +75,25 @@ async function main() {
           const filteredArgs = args.filter((a) => a !== '--background');
           runBackground(join(srcDir, 'cli', 'backfill.ts'), filteredArgs);
         } else {
-          await runTsxCommand(join(srcDir, 'cli', 'backfill.ts'), args);
+          await runCommand(join(srcDir, 'cli', 'backfill.ts'), args);
         }
         break;
 
       case 'session-init':
         // Internal command for background session node creation
-        await runTsxCommand(join(srcDir, 'cli', 'session-init.ts'), args);
+        await runCommand(join(srcDir, 'cli', 'session-init.ts'), args);
         break;
 
       case 'recent':
-        await runTsxCommand(join(srcDir, 'cli', 'recent.ts'), args);
+        await runCommand(join(srcDir, 'cli', 'recent.ts'), args);
         break;
 
       case 'search':
-        await runTsxCommand(join(srcDir, 'cli', 'search.ts'), args);
+        await runCommand(join(srcDir, 'cli', 'search.ts'), args);
         break;
 
       case 'status':
-        await runTsxCommand(join(srcDir, 'cli', 'status.ts'), args);
+        await runCommand(join(srcDir, 'cli', 'status.ts'), args);
         break;
 
       case '--help':

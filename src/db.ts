@@ -1,10 +1,11 @@
 /**
  * Total Recall Database with sqlite-vec for vector search
+ * Uses bun:sqlite for native Bun compatibility
  */
 
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import * as sqliteVec from 'sqlite-vec';
-import { mkdirSync } from 'fs';
+import { mkdirSync, existsSync } from 'fs';
 import { dirname } from 'path';
 import { randomUUID } from 'crypto';
 import { getDbPath } from './paths.js';
@@ -22,8 +23,24 @@ import type {
   ProgressiveDisclosureEventType
 } from './schema.js';
 
+// macOS requires custom SQLite for extension support
+// Try common Homebrew paths
+const macOSSqlitePaths = [
+  '/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib',  // Apple Silicon
+  '/usr/local/opt/sqlite/lib/libsqlite3.dylib',      // Intel Mac
+];
+
+if (process.platform === 'darwin') {
+  for (const sqlitePath of macOSSqlitePaths) {
+    if (existsSync(sqlitePath)) {
+      Database.setCustomSQLite(sqlitePath);
+      break;
+    }
+  }
+}
+
 export class SynthesisDatabase {
-  private db: Database.Database;
+  private db: Database;
 
   constructor(dbPath?: string) {
     const path = dbPath || getDbPath();
@@ -31,7 +48,7 @@ export class SynthesisDatabase {
 
     this.db = new Database(path);
     sqliteVec.load(this.db);
-    this.db.pragma('journal_mode = WAL');
+    this.db.exec('PRAGMA journal_mode = WAL');
     this.initSchema();
   }
 

@@ -1,11 +1,11 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env bun
 /**
  * Bidirectional sync: Local <-> Remote Total Recall databases
  *
  * Usage:
- *   npx tsx scripts/sync-with-remote.ts [user@host]
- *   npx tsx scripts/sync-with-remote.ts ramram@168.119.4.15
- *   npx tsx scripts/sync-with-remote.ts --dry-run ramram@168.119.4.15
+ *   bun scripts/sync-with-remote.ts [user@host]
+ *   bun scripts/sync-with-remote.ts ramram@168.119.4.15
+ *   bun scripts/sync-with-remote.ts --dry-run ramram@168.119.4.15
  *
  * What it does:
  *   1. Checkpoints remote WAL for safe copy
@@ -15,7 +15,7 @@
  *   5. Optionally regenerates embeddings for new nodes
  */
 
-import Database from 'better-sqlite3';
+import { Database } from 'bun:sqlite';
 import { execSync } from 'child_process';
 import { existsSync, mkdirSync, copyFileSync } from 'fs';
 import path from 'path';
@@ -79,7 +79,7 @@ function pushRemoteDb(remote: string, localPath: string) {
   console.log('  Upload complete');
 }
 
-function getLastSyncTime(db: Database.Database): number {
+function getLastSyncTime(db: Database): number {
   try {
     db.exec(`
       CREATE TABLE IF NOT EXISTS sync_metadata (
@@ -94,13 +94,13 @@ function getLastSyncTime(db: Database.Database): number {
   }
 }
 
-function setLastSyncTime(db: Database.Database, timestamp: number) {
+function setLastSyncTime(db: Database, timestamp: number) {
   db.prepare("INSERT OR REPLACE INTO sync_metadata (key, value) VALUES ('last_sync', ?)").run(timestamp.toString());
 }
 
 function mergeNodes(
-  sourceDb: Database.Database,
-  targetDb: Database.Database,
+  sourceDb: Database,
+  targetDb: Database,
   lastSync: number,
   direction: string
 ): { merged: number; conflicts: number } {
@@ -173,8 +173,8 @@ function mergeNodes(
 }
 
 function mergeEdges(
-  sourceDb: Database.Database,
-  targetDb: Database.Database,
+  sourceDb: Database,
+  targetDb: Database,
   lastSync: number,
   direction: string
 ): number {
@@ -208,8 +208,8 @@ function mergeEdges(
 }
 
 function mergeRawContent(
-  sourceDb: Database.Database,
-  targetDb: Database.Database,
+  sourceDb: Database,
+  targetDb: Database,
   lastSync: number,
   direction: string
 ): number {
