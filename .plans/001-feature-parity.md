@@ -23,11 +23,11 @@ This plan brings the standalone TotalRecall plugin to feature parity with the co
 
 | Component | Coordinator Location |
 |-----------|---------------------|
-| DB Schema | `<coordinator-repo>/coordinator/src/db/migrations.ts` |
-| DB Methods | `<coordinator-repo>/coordinator/src/db/index.ts` |
-| MCP Tools | `<coordinator-repo>/coordinator/src/mcp/totalrecall-tools.ts` |
-| Synthesis Worker | `<coordinator-repo>/coordinator/src/services/synthesis-worker.ts` |
-| LLM Client | `<coordinator-repo>/coordinator/src/services/llm-synthesis.ts` |
+| DB Schema | `<coordinator-repo>/src/db/migrations.ts` |
+| DB Methods | `<coordinator-repo>/src/db/index.ts` |
+| MCP Tools | `<coordinator-repo>/src/mcp/totalrecall-tools.ts` |
+| Synthesis Worker | `<coordinator-repo>/src/services/synthesis-worker.ts` |
+| LLM Client | `<coordinator-repo>/src/services/llm-synthesis.ts` |
 
 ---
 
@@ -2608,7 +2608,6 @@ After completing all phases, verify the following:
 
 ### Build
 ```bash
-cd /Users/alexander/Projects/totalrecall-plugin
 npm run build
 ```
 
