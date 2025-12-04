@@ -1,8 +1,10 @@
 /**
  * LLM client for background synthesis using Claude Haiku
+ * Falls back to Claude CLI if SDK API call fails (e.g., out of credits)
  */
 
 import Anthropic from '@anthropic-ai/sdk';
+import { spawn } from 'child_process';
 import type { NodeType } from './schema.js';
 
 export interface SynthesisResult {
@@ -24,10 +26,19 @@ export interface ConversationChunk {
 export class LLMSynthesisClient {
   private client: Anthropic;
   private model: string;
+  private cliModel: string;
+  private useCliFallback: boolean;
 
-  constructor(apiKey: string, model: string = 'claude-3-5-haiku-20241022') {
+  constructor(
+    apiKey: string,
+    model: string = 'claude-3-5-haiku-20241022',
+    options: { useCliFallback?: boolean; cliModel?: string } = {}
+  ) {
     this.client = new Anthropic({ apiKey });
     this.model = model;
+    this.useCliFallback = options.useCliFallback ?? true;
+    // CLI uses different model naming - map to haiku
+    this.cliModel = options.cliModel ?? 'haiku';
   }
 
   async synthesize(
@@ -60,10 +71,100 @@ export class LLMSynthesisClient {
 
       return this.parseResponse(responseText);
     } catch (error) {
+      // Check if this is a recoverable API error (rate limit, credits, etc.)
+      if (this.useCliFallback && this.isRecoverableApiError(error)) {
+        console.error(
+          `[LLMSynthesis] SDK API call failed, falling back to CLI: ${error instanceof Error ? error.message : String(error)}`
+        );
+        return this.synthesizeWithCli(prompt);
+      }
       throw new Error(
         `LLM synthesis failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  /**
+   * Check if an error is recoverable by falling back to CLI
+   * (rate limits, credit issues, auth issues with SDK but not CLI)
+   */
+  private isRecoverableApiError(error: unknown): boolean {
+    if (!(error instanceof Error)) return true; // Unknown errors - try CLI
+
+    const message = error.message.toLowerCase();
+    const errorName = error.name?.toLowerCase() || '';
+
+    // Common API error patterns that CLI might handle differently
+    const recoverablePatterns = [
+      'rate limit',
+      'rate_limit',
+      'too many requests',
+      '429',
+      'credit',
+      'billing',
+      'quota',
+      'insufficient',
+      'overloaded',
+      '529',
+      '503',
+      'service unavailable',
+      'authentication',
+      'unauthorized',
+      '401',
+      '403',
+    ];
+
+    return recoverablePatterns.some(
+      (pattern) => message.includes(pattern) || errorName.includes(pattern)
+    );
+  }
+
+  /**
+   * Fallback synthesis using Claude CLI
+   */
+  private async synthesizeWithCli(prompt: string): Promise<SynthesisResult> {
+    return new Promise((resolve, reject) => {
+      const args = ['-p', prompt, '--model', this.cliModel, '--output-format', 'text'];
+
+      const child = spawn('claude', args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env },
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      child.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      child.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      child.on('error', (err) => {
+        reject(new Error(`CLI fallback failed to spawn: ${err.message}`));
+      });
+
+      child.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`CLI fallback exited with code ${code}: ${stderr}`));
+          return;
+        }
+
+        try {
+          const result = this.parseResponse(stdout);
+          console.error('[LLMSynthesis] CLI fallback succeeded');
+          resolve(result);
+        } catch (parseError) {
+          reject(
+            new Error(
+              `CLI fallback parse failed: ${parseError instanceof Error ? parseError.message : String(parseError)}`
+            )
+          );
+        }
+      });
+    });
   }
 
   private buildPrompt(

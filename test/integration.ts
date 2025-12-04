@@ -230,6 +230,84 @@ async function testQueueOperations() {
   console.log('Queue operation tests: PASS\n');
 }
 
+async function testScoreCalculation() {
+  console.log('Test: Score calculation (L2 to cosine conversion)...');
+  await cleanup();
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+  await initEmbeddings();
+
+  // Create a node with specific content
+  const testContent = 'TypeScript compiler configuration for strict mode';
+  const node = db.createNode({
+    node_type: 'learning',
+    one_liner: testContent,
+    summary: 'Learning about TypeScript strict mode configuration',
+    full_synthesis: 'Full details about tsconfig strict settings',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const embedding = await generateSynthesisEmbedding(node.one_liner, node.summary, node.node_type);
+  db.insertEmbedding(node.id, embedding);
+
+  // Search for the exact content - should get high score
+  const exactQuery = await generateEmbedding(testContent);
+  const exactResults = db.searchByVector(exactQuery, 5, 0.0); // No min_score filter
+
+  if (exactResults.length === 0) {
+    throw new Error('Expected results for exact content search');
+  }
+
+  const exactScore = exactResults[0].score;
+
+  // Score must be in valid cosine similarity range [0, 1]
+  if (exactScore < 0 || exactScore > 1) {
+    throw new Error(`Score ${exactScore} outside valid range [0, 1] - formula may be wrong`);
+  }
+  console.log(`  - Score in valid range [0,1]: PASS (score: ${exactScore.toFixed(3)})`);
+
+  // Searching for exact/similar content should return high score (>= 0.7)
+  if (exactScore < 0.7) {
+    throw new Error(`Exact content search score ${exactScore} < 0.7 - L2 to cosine conversion may be broken`);
+  }
+  console.log(`  - Exact content returns high score (>= 0.7): PASS (score: ${exactScore.toFixed(3)})`);
+
+  // Search for unrelated content - should get lower score
+  const unrelatedQuery = await generateEmbedding('cooking recipes for Italian pasta');
+  const unrelatedResults = db.searchByVector(unrelatedQuery, 5, 0.0);
+
+  if (unrelatedResults.length > 0) {
+    const unrelatedScore = unrelatedResults[0].score;
+    // Unrelated content should score lower than exact content
+    if (unrelatedScore >= exactScore) {
+      throw new Error(`Unrelated score ${unrelatedScore} >= exact score ${exactScore}`);
+    }
+    console.log(`  - Unrelated content scores lower: PASS (${unrelatedScore.toFixed(3)} < ${exactScore.toFixed(3)})`);
+  } else {
+    console.log('  - Unrelated content scores lower: PASS (no results)');
+  }
+
+  // Verify min_score filtering works correctly
+  const filteredResults = db.searchByVector(exactQuery, 5, 0.8);
+  const allPassThreshold = filteredResults.every(r => r.score >= 0.8);
+  if (!allPassThreshold) {
+    throw new Error('min_score filtering not working correctly');
+  }
+  console.log('  - min_score filtering: PASS');
+
+  db.close();
+  console.log('Score calculation tests: PASS\n');
+}
+
 async function testProgressiveDisclosureAnalytics() {
   console.log('Test: Progressive disclosure analytics...');
   await cleanup();
@@ -301,6 +379,7 @@ async function main() {
     await testDatabaseSchema();
     await testEmbeddings();
     await testVectorSearch();
+    await testScoreCalculation();
     await testQueueOperations();
     await testProgressiveDisclosureAnalytics();
 

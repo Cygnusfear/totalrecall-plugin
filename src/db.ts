@@ -279,9 +279,8 @@ export class SynthesisDatabase {
     minScore: number,
     nodeTypes?: NodeType[]
   ): SearchResult[] {
-    // sqlite-vec uses distance (lower = more similar)
-    // We need to convert to similarity score (higher = more similar)
-    // For normalized vectors: similarity = 1 - distance
+    // sqlite-vec uses L2 (Euclidean) distance by default
+    // For normalized vectors: L2^2 = 2 - 2*cosine, so cosine = 1 - L2^2/2
 
     let query = `
       SELECT
@@ -319,7 +318,7 @@ export class SynthesisDatabase {
       .map(r => ({
         node_id: r.node_id,
         one_liner: r.one_liner,
-        score: 1 - r.distance,  // Convert distance to similarity
+        score: 1 - (r.distance * r.distance) / 2,  // Convert L2 distance to cosine similarity for normalized vectors
         node_type: r.node_type,
         created_at: r.created_at
       }))

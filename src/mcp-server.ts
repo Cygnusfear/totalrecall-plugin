@@ -443,7 +443,7 @@ interface SynthesisSearchArgs {
 }
 
 async function handleSynthesisSearch(args: SynthesisSearchArgs) {
-  const { query, max_results = 5, min_score = 0.5, node_types, after, before } = args;
+  const { query, max_results = 5, min_score = 0.3, node_types, after, before } = args;
   const startTime = Date.now();
 
   try {
