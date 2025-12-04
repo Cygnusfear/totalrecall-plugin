@@ -16,7 +16,7 @@
   ],
   "mcpServers": {
     "totalrecall": {
-      "command": "node",
+      "command": "bun",
       "args": ["${CLAUDE_PLUGIN_ROOT}/cli/mcp-server-wrapper.js"]
     }
   },

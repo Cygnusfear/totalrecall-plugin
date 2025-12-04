@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+#!/usr/bin/env bun
 /**
  * Total Recall MCP Server Wrapper
  *
@@ -20,19 +20,15 @@ const __dirname = dirname(__filename);
 // Determine plugin root directory
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || join(__dirname, '..');
 
-// Helper function to run npm install
-function runNpmInstall() {
+// Helper function to run bun install
+function runBunInstall() {
   return new Promise((resolve, reject) => {
-    const isWindows = process.platform === 'win32';
-    const npmCommand = isWindows ? 'npm.cmd' : 'npm';
-
     console.error('Installing totalrecall dependencies (first run only)...');
     console.error('This may take 30-60 seconds...');
 
-    const child = spawn(npmCommand, ['install', '--prefer-offline', '--no-audit', '--no-fund'], {
+    const child = spawn('bun', ['install'], {
       cwd: PLUGIN_ROOT,
       stdio: ['ignore', 'pipe', 'pipe'],
-      shell: isWindows
     });
 
     child.stdout.on('data', (data) => {
@@ -49,13 +45,13 @@ function runNpmInstall() {
         resolve();
       } else {
         console.error('ERROR: Failed to install dependencies.');
-        console.error(`Please run manually: cd "${PLUGIN_ROOT}" && npm install`);
-        reject(new Error(`npm install failed with exit code ${code}`));
+        console.error(`Please run manually: cd "${PLUGIN_ROOT}" && bun install`);
+        reject(new Error(`bun install failed with exit code ${code}`));
       }
     });
 
     child.on('error', (err) => {
-      console.error(`ERROR: Failed to run npm install: ${err.message}`);
+      console.error(`ERROR: Failed to run bun install: ${err.message}`);
       reject(err);
     });
   });
@@ -66,20 +62,19 @@ async function main() {
     // Check if node_modules exists
     const nodeModulesPath = join(PLUGIN_ROOT, 'node_modules');
     if (!existsSync(nodeModulesPath)) {
-      await runNpmInstall();
+      await runBunInstall();
     }
 
-    // Start the MCP server
-    const mcpServerPath = join(PLUGIN_ROOT, 'dist', 'mcp-server.js');
+    // Start the MCP server (run TypeScript directly with bun)
+    const mcpServerPath = join(PLUGIN_ROOT, 'src', 'mcp-server.ts');
 
     if (!existsSync(mcpServerPath)) {
       console.error(`ERROR: MCP server not found at ${mcpServerPath}`);
-      console.error('Please run: npm run build');
       process.exit(1);
     }
 
-    // Use spawn with shell: false for better cross-platform compatibility
-    const child = spawn(process.execPath, [mcpServerPath], {
+    // Use bun to run TypeScript directly
+    const child = spawn('bun', [mcpServerPath], {
       stdio: 'inherit',
       shell: false,
       env: {
