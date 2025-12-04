@@ -6,12 +6,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall session-graft",
+            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall.js session-graft",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall backfill --background",
+            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall.js backfill --background",
             "async": true
           }
         ]
@@ -22,7 +22,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall queue-synthesis",
+            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall.js queue-synthesis",
             "async": true
           }
         ]
@@ -33,7 +33,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall session-complete",
+            "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall.js session-complete",
             "timeout": 30
           }
         ]
