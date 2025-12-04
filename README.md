@@ -31,9 +31,8 @@ claude plugin install ~/projects/totalrecall-plugin
 
 ## Prerequisites
 
-**Required:** Node.js 18+
-
-**Optional:** Set `ANTHROPIC_API_KEY` for background synthesis worker (auto-synthesizes conversation chunks using Haiku)
+- **Node.js 18+**
+- **ANTHROPIC_API_KEY** - Required for background synthesis worker
 
 ## How It Works
 
