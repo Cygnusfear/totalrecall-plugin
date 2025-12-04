@@ -1,14 +1,21 @@
 /**
  * CLI: session-graft
- * Called by SessionStart hook to graft current session to synthesis graph
+ * Called by SessionStart hook to provide context and graft session to synthesis graph
+ *
+ * Fast path: Query existing nodes and output context immediately
+ * Background: Spawn session-init to create node + embedding (non-blocking)
  */
 
+import { spawn } from 'child_process';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 import { getDatabase } from '../db.js';
-import { generateSynthesisEmbedding, initEmbeddings } from '../embeddings.js';
 
-async function main() {
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const cliPath = join(__dirname, '..', '..', 'cli', 'totalrecall.js');
+
+function main() {
   const db = getDatabase();
-  await initEmbeddings();
 
   // Get session info from environment (set by Claude Code hooks)
   const transcriptPath = process.env.TRANSCRIPT_PATH;
@@ -16,40 +23,7 @@ async function main() {
     ? transcriptPath.split('/').pop()?.replace('.jsonl', '') || `session-${Date.now()}`
     : `session-${Date.now()}`;
 
-  const now = Date.now();
-
-  // Create session node
-  const sessionNode = db.createNode({
-    node_type: 'summary',
-    one_liner: `Session started: ${new Date(now).toISOString()}`,
-    summary: `Session grafted at ${new Date(now).toISOString()}`,
-    full_synthesis: `Session ${sessionId} started.`,
-    entity_name: null,
-    entity_aliases: null,
-    temporal_context: `session start: ${new Date(now).toISOString()}`,
-    first_seen: now,
-    last_updated: now,
-    status: null,
-    assigned_agent: null,
-    priority: null,
-    source_session_id: sessionId,
-    source_agent_id: null,
-    source_repo: null,
-  });
-
-  // Generate embedding
-  try {
-    const embedding = await generateSynthesisEmbedding(
-      sessionNode.one_liner,
-      sessionNode.summary,
-      'summary'
-    );
-    db.insertEmbedding(sessionNode.id, embedding);
-  } catch (e) {
-    console.error('Failed to generate embedding:', e);
-  }
-
-  // Query recent syntheses for context injection
+  // FAST: Query recent syntheses for context injection
   const recent = db.queryNodes({ limit: 5, order_by: 'last_updated' });
 
   // Format for hook output
@@ -58,7 +32,7 @@ async function main() {
       ? recent.map((n) => `- [${n.node_type}] ${n.one_liner}`).join('\n')
       : 'No recent synthesis nodes found.';
 
-  // Output hook response
+  // Output hook response immediately
   console.log(
     JSON.stringify({
       hookSpecificOutput: {
@@ -75,9 +49,13 @@ Use synthesis_search(query) to find specific context.
   );
 
   db.close();
+
+  // BACKGROUND: Spawn session-init to create node + embedding (non-blocking)
+  spawn('node', [cliPath, 'session-init'], {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, SESSION_ID: sessionId },
+  }).unref();
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+main();

@@ -29,7 +29,7 @@ function runTsxCommand(scriptPath, cmdArgs) {
       return;
     }
 
-    const child = spawn('npx', ['tsx', scriptPath, ...cmdArgs], {
+    const child = spawn('bunx', ['tsx', scriptPath, ...cmdArgs], {
       stdio: 'inherit',
     });
 
@@ -45,7 +45,7 @@ function runTsxCommand(scriptPath, cmdArgs) {
 }
 
 function runBackground(scriptPath, cmdArgs) {
-  const child = spawn('npx', ['tsx', scriptPath, ...cmdArgs], {
+  const child = spawn('bunx', ['tsx', scriptPath, ...cmdArgs], {
     detached: true,
     stdio: 'ignore',
   });
@@ -77,6 +77,11 @@ async function main() {
         } else {
           await runTsxCommand(join(srcDir, 'cli', 'backfill.ts'), args);
         }
+        break;
+
+      case 'session-init':
+        // Internal command for background session node creation
+        await runTsxCommand(join(srcDir, 'cli', 'session-init.ts'), args);
         break;
 
       case 'recent':
