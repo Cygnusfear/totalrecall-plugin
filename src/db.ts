@@ -254,7 +254,7 @@ export class SynthesisDatabase {
     const { node_types, session_id, limit = 100, order_by = 'last_updated' } = filters;
 
     let query = 'SELECT * FROM synthesis_nodes WHERE 1=1';
-    const params: unknown[] = [];
+    const params: (string | number | null)[] = [];
 
     if (node_types?.length) {
       query += ` AND node_type IN (${node_types.map(() => '?').join(',')})`;
@@ -311,7 +311,7 @@ export class SynthesisDatabase {
       WHERE vec.embedding MATCH ? AND k = ?
     `;
 
-    const params: unknown[] = [
+    const params: (string | number | Buffer | null)[] = [
       Buffer.from(new Float32Array(queryEmbedding).buffer),
       limit * 2  // Over-fetch to account for filtering
     ];
@@ -529,7 +529,7 @@ export class SynthesisDatabase {
     const { session_id, status, limit = 50 } = filters;
 
     let query = 'SELECT * FROM synthesis_queue WHERE 1=1';
-    const params: unknown[] = [];
+    const params: (string | number | null)[] = [];
 
     if (session_id) {
       query += ' AND session_id = ?';
@@ -555,7 +555,7 @@ export class SynthesisDatabase {
   ): void {
     const now = Date.now();
     const updates: string[] = ['status = ?'];
-    const values: unknown[] = [status];
+    const values: (string | number | null)[] = [status];
 
     if (status === 'processing') {
       updates.push('started_at = ?');
