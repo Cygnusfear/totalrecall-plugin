@@ -121,14 +121,19 @@ export class LLMSynthesisClient {
 
   /**
    * Fallback synthesis using Claude CLI
+   * Removes ANTHROPIC_API_KEY to force CLI to use subscription instead of API
    */
   private async synthesizeWithCli(prompt: string): Promise<SynthesisResult> {
     return new Promise((resolve, reject) => {
       const args = ['-p', prompt, '--model', this.cliModel, '--output-format', 'text'];
 
+      // Remove API key to force CLI to use subscription auth
+      const env = { ...process.env };
+      delete env.ANTHROPIC_API_KEY;
+
       const child = spawn('claude', args, {
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
+        env,
       });
 
       let stdout = '';
