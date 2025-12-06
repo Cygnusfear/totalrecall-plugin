@@ -128,7 +128,15 @@ export class LLMSynthesisClient {
    */
   private async synthesizeWithCli(prompt: string): Promise<SynthesisResult> {
     return new Promise((resolve, reject) => {
-      const args = ['-p', prompt, '--model', this.cliModel, '--output-format', 'text'];
+      // Use --strict-mcp-config with empty config to disable MCP servers
+      // This prevents spawning heavy MCP server processes for simple synthesis
+      const args = [
+        '-p', prompt,
+        '--model', this.cliModel,
+        '--output-format', 'text',
+        '--mcp-config', '{"mcpServers":{}}',
+        '--strict-mcp-config',
+      ];
 
       // Remove API key to force CLI to use subscription auth
       const env = { ...process.env };
