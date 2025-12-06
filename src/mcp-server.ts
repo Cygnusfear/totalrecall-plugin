@@ -961,19 +961,23 @@ async function main() {
     console.error('Warning: Failed to pre-load embedding model:', e);
   });
 
-  // Initialize synthesis worker if API key is available
+  // Initialize synthesis worker if API key is available and not in standalone mode
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (apiKey) {
+  const standaloneMode = process.env.SYNTHESIS_STANDALONE === 'true';
+
+  if (apiKey && !standaloneMode) {
     const llmClient = new LLMSynthesisClient(apiKey);
     synthesisWorker = new SynthesisWorker(db, llmClient, {
-      pollInterval: 30000, // 30 seconds
-      batchSize: 5,
-      maxRetries: 3,
+      pollInterval: parseInt(process.env.SYNTHESIS_POLL_INTERVAL || '30000'),
+      batchSize: parseInt(process.env.SYNTHESIS_BATCH_SIZE || '5'),
+      maxRetries: parseInt(process.env.SYNTHESIS_MAX_RETRIES || '3'),
     });
     synthesisWorker.start().catch((e) => {
       console.error('Failed to start synthesis worker:', e);
     });
-    console.error('Synthesis worker started (ANTHROPIC_API_KEY detected)');
+    console.error('Synthesis worker started (embedded mode)');
+  } else if (standaloneMode) {
+    console.error('Synthesis worker disabled (SYNTHESIS_STANDALONE=true)');
   } else {
     console.error('Synthesis worker disabled (no ANTHROPIC_API_KEY)');
   }

@@ -594,6 +594,31 @@ export class SynthesisDatabase {
     this.withRetry(() => stmt.run(id));
   }
 
+  resetStuckSynthesisItems(timeoutMs: number): number {
+    const cutoffTime = Date.now() - timeoutMs;
+    const stmt = this.db.prepare(`
+      UPDATE synthesis_queue
+      SET status = 'pending', retry_count = retry_count + 1
+      WHERE status = 'processing'
+        AND (started_at IS NOT NULL AND started_at < ?)
+        OR (started_at IS NULL AND created_at < ?)
+    `);
+    const result = this.withRetry(() => stmt.run(cutoffTime, cutoffTime));
+    return result.changes;
+  }
+
+  getQueueStats(): { pending: number; processing: number; completed: number; failed: number } {
+    const stats = this.db.prepare(`
+      SELECT
+        COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+        COUNT(CASE WHEN status = 'processing' THEN 1 END) as processing,
+        COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed,
+        COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed
+      FROM synthesis_queue
+    `).get() as { pending: number; processing: number; completed: number; failed: number };
+    return stats;
+  }
+
   // ============ Progressive Disclosure Operations ============
 
   createProgressiveDisclosureEvent(event: Omit<ProgressiveDisclosureEvent, 'id' | 'created_at'>): ProgressiveDisclosureEvent {

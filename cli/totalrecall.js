@@ -10,6 +10,7 @@
  *   recent            - Get recent synthesis nodes
  *   search            - Search synthesis by query
  *   status            - Check system status
+ *   worker            - Run standalone synthesis worker (foreground)
  */
 
 import { fileURLToPath } from 'url';
@@ -96,6 +97,11 @@ async function main() {
         await runCommand(join(srcDir, 'cli', 'status.ts'), args);
         break;
 
+      case 'worker':
+        // Run standalone worker (foreground, for systemd)
+        await runCommand(join(srcDir, 'standalone-worker.ts'), args);
+        break;
+
       case '--help':
       case '-h':
       case undefined:
@@ -116,6 +122,9 @@ User Commands:
                       --format=json|text
   search <query>      Search synthesis by semantic similarity
   status              Check system status
+
+Worker Commands:
+  worker              Run standalone synthesis worker (foreground)
 
 Environment:
   ANTHROPIC_API_KEY   Required for background synthesis
