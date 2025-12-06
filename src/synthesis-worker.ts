@@ -3,10 +3,17 @@
  */
 
 import type { SynthesisDatabase } from './db.js';
-import type { SynthesisQueue } from './schema.js';
+import type { SynthesisQueue, SynthesisNode, EdgeType } from './schema.js';
 import { LLMSynthesisClient, type ConversationChunk } from './llm-synthesis.js';
 import { generateSynthesisEmbedding } from './embeddings.js';
 import { Semaphore } from './semaphore.js';
+
+// Config for auto-relationship building
+const AUTO_RELATIONSHIP_CONFIG = {
+  minSimilarity: 0.5,
+  maxEdges: 3, // Keep it light for auto-building
+  useLLM: true, // Use LLM validation
+};
 
 export interface SynthesisWorkerConfig {
   pollInterval?: number; // ms, default 30000 (30s)
@@ -185,8 +192,9 @@ export class SynthesisWorker {
       });
 
       // Generate embedding for new node
+      let embedding: number[] | null = null;
       try {
-        const embedding = await generateSynthesisEmbedding(
+        embedding = await generateSynthesisEmbedding(
           synthesis.one_liner,
           synthesis.summary,
           synthesis.node_type,
@@ -200,6 +208,15 @@ export class SynthesisWorker {
       }
 
       console.log(`[SynthesisWorker] Created synthesis node ${node.id}`);
+
+      // Build relationships for the new node
+      if (embedding) {
+        try {
+          await this.buildRelationshipsForNode(node, embedding);
+        } catch (e) {
+          console.error('[SynthesisWorker] Failed to build relationships:', e);
+        }
+      }
 
       this.db.linkRawContentToSynthesis(rawContentIds, node.id);
       this.db.updateSynthesisQueueStatus(item.id, 'completed', node.id);
@@ -219,6 +236,101 @@ export class SynthesisWorker {
 
       throw error;
     }
+  }
+
+  /**
+   * Build relationships for a newly created node
+   */
+  private async buildRelationshipsForNode(
+    node: SynthesisNode,
+    embedding: number[]
+  ): Promise<number> {
+    const { minSimilarity, maxEdges, useLLM } = AUTO_RELATIONSHIP_CONFIG;
+
+    // Find similar nodes
+    const candidates = this.db.searchByVector(embedding, maxEdges * 2, minSimilarity);
+
+    let edgesCreated = 0;
+
+    for (const candidate of candidates) {
+      // Skip self
+      if (candidate.node_id === node.id) continue;
+
+      // Skip if edge already exists
+      if (this.db.edgeExists(node.id, candidate.node_id)) continue;
+
+      const targetNode = this.db.getNode(candidate.node_id);
+      if (!targetNode) continue;
+
+      let edgeType: EdgeType = 'relates_to';
+
+      // Use LLM to validate and classify relationship
+      if (useLLM) {
+        try {
+          const classification = await this.llmClient.classifyRelationship(
+            {
+              one_liner: node.one_liner,
+              summary: node.summary,
+              node_type: node.node_type,
+              created_at: node.created_at,
+              entity_name: node.entity_name,
+              temporal_context: node.temporal_context,
+              source_repo: node.source_repo,
+              source_session_id: node.source_session_id,
+            },
+            {
+              one_liner: targetNode.one_liner,
+              summary: targetNode.summary,
+              node_type: targetNode.node_type,
+              created_at: targetNode.created_at,
+              entity_name: targetNode.entity_name,
+              temporal_context: targetNode.temporal_context,
+              source_repo: targetNode.source_repo,
+              source_session_id: targetNode.source_session_id,
+            }
+          );
+
+          if (!classification.has_relationship) {
+            console.log(`[SynthesisWorker] Rejected relationship: ${node.id.slice(0, 8)} <-> ${candidate.node_id.slice(0, 8)}`);
+            continue;
+          }
+
+          edgeType = classification.edge_type as EdgeType;
+          console.log(`[SynthesisWorker] Validated relationship: ${node.id.slice(0, 8)} -> ${candidate.node_id.slice(0, 8)} (${edgeType})`);
+        } catch (e) {
+          // On LLM error, use heuristics
+          console.warn('[SynthesisWorker] LLM classification failed, using heuristics:', e);
+          edgeType = this.determineEdgeType(node, targetNode);
+        }
+      } else {
+        edgeType = this.determineEdgeType(node, targetNode);
+      }
+
+      // Create the edge
+      this.db.createEdge({
+        from_node_id: node.id,
+        to_node_id: candidate.node_id,
+        edge_type: edgeType,
+        weight: candidate.score,
+        context: 'auto-built during synthesis',
+      });
+
+      edgesCreated++;
+      if (edgesCreated >= maxEdges) break;
+    }
+
+    console.log(`[SynthesisWorker] Created ${edgesCreated} relationships for node ${node.id.slice(0, 8)}`);
+    return edgesCreated;
+  }
+
+  /**
+   * Heuristic edge type determination (fallback)
+   */
+  private determineEdgeType(from: SynthesisNode, to: SynthesisNode): EdgeType {
+    if (from.node_type === 'decision' && to.node_type === 'task') return 'caused';
+    if (from.node_type === 'summary' && from.source_session_id === to.source_session_id) return 'contains';
+    if (from.source_session_id === to.source_session_id && from.created_at < to.created_at) return 'preceded';
+    return 'relates_to';
   }
 
   getStatus(): {
