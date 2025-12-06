@@ -209,12 +209,12 @@ export class SynthesisWorker {
 
       console.log(`[SynthesisWorker] Created synthesis node ${node.id}`);
 
-      // Build relationships for the new node
+      // Dream: connect new memory to the graph
       if (embedding) {
         try {
-          await this.buildRelationshipsForNode(node, embedding);
+          await this.dream(node, embedding);
         } catch (e) {
-          console.error('[SynthesisWorker] Failed to build relationships:', e);
+          console.error('[SynthesisWorker] Dream interrupted:', e);
         }
       }
 
@@ -239,9 +239,10 @@ export class SynthesisWorker {
   }
 
   /**
-   * Build relationships for a newly created node
+   * Dream: connect a new memory to the graph by finding and validating relationships
+   * Like sleep consolidation, this runs in the background after synthesis
    */
-  private async buildRelationshipsForNode(
+  private async dream(
     node: SynthesisNode,
     embedding: number[]
   ): Promise<number> {
@@ -291,12 +292,12 @@ export class SynthesisWorker {
           );
 
           if (!classification.has_relationship) {
-            console.log(`[SynthesisWorker] Rejected relationship: ${node.id.slice(0, 8)} <-> ${candidate.node_id.slice(0, 8)}`);
+            console.log(`[SynthesisWorker] Dreaming... rejected ${node.id.slice(0, 8)} <-> ${candidate.node_id.slice(0, 8)}`);
             continue;
           }
 
           edgeType = classification.edge_type as EdgeType;
-          console.log(`[SynthesisWorker] Validated relationship: ${node.id.slice(0, 8)} -> ${candidate.node_id.slice(0, 8)} (${edgeType})`);
+          console.log(`[SynthesisWorker] Dreaming... connected ${node.id.slice(0, 8)} -> ${candidate.node_id.slice(0, 8)} (${edgeType})`);
         } catch (e) {
           // On LLM error, use heuristics
           console.warn('[SynthesisWorker] LLM classification failed, using heuristics:', e);
@@ -319,7 +320,7 @@ export class SynthesisWorker {
       if (edgesCreated >= maxEdges) break;
     }
 
-    console.log(`[SynthesisWorker] Created ${edgesCreated} relationships for node ${node.id.slice(0, 8)}`);
+    console.log(`[SynthesisWorker] Dream complete: ${edgesCreated} connections formed for ${node.id.slice(0, 8)}`);
     return edgesCreated;
   }
 
