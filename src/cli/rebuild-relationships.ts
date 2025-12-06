@@ -7,9 +7,71 @@
  * 2. LLM-validated (slower, more accurate - uses Claude to verify relationships)
  */
 
+import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
+import { join } from 'path';
 import { getDatabase } from '../db.js';
 import { initEmbeddings } from '../embeddings.js';
 import { RelationshipBuilder } from '../lib/relationship-builder.js';
+import { getTotalRecallDir } from '../paths.js';
+
+// Lock file to prevent multiple instances
+const LOCK_FILE = join(getTotalRecallDir(), 'rebuild-relationships.lock');
+const LOCK_STALE_MS = 4 * 60 * 60 * 1000; // 4 hours - consider lock stale after this
+
+function acquireLock(): boolean {
+  try {
+    if (existsSync(LOCK_FILE)) {
+      const lockData = JSON.parse(readFileSync(LOCK_FILE, 'utf-8'));
+      const lockAge = Date.now() - lockData.timestamp;
+
+      // Check if lock is stale
+      if (lockAge > LOCK_STALE_MS) {
+        console.warn(`Stale lock found (${(lockAge / 1000 / 60).toFixed(0)} min old), removing...`);
+        unlinkSync(LOCK_FILE);
+      } else {
+        // Check if process is still running
+        try {
+          process.kill(lockData.pid, 0); // Signal 0 = check if process exists
+          return false; // Process still running
+        } catch {
+          // Process not running, lock is orphaned
+          console.warn(`Orphaned lock found (PID ${lockData.pid} not running), removing...`);
+          unlinkSync(LOCK_FILE);
+        }
+      }
+    }
+
+    // Create lock file
+    writeFileSync(LOCK_FILE, JSON.stringify({
+      pid: process.pid,
+      timestamp: Date.now(),
+      started: new Date().toISOString(),
+    }));
+    return true;
+  } catch (e) {
+    console.error('Failed to acquire lock:', e);
+    return false;
+  }
+}
+
+function releaseLock(): void {
+  try {
+    if (existsSync(LOCK_FILE)) {
+      const lockData = JSON.parse(readFileSync(LOCK_FILE, 'utf-8'));
+      // Only release if we own the lock
+      if (lockData.pid === process.pid) {
+        unlinkSync(LOCK_FILE);
+      }
+    }
+  } catch {
+    // Ignore errors during cleanup
+  }
+}
+
+// Ensure lock is released on exit
+process.on('exit', releaseLock);
+process.on('SIGINT', () => { releaseLock(); process.exit(130); });
+process.on('SIGTERM', () => { releaseLock(); process.exit(143); });
 
 function parseArgs(args: string[]) {
   const result: Record<string, string | boolean> = {};
@@ -76,6 +138,15 @@ async function main() {
     printHelp();
     process.exit(0);
   }
+
+  // Acquire lock to prevent multiple instances
+  if (!acquireLock()) {
+    console.error('ERROR: Another rebuild-relationships process is already running.');
+    console.error(`Lock file: ${LOCK_FILE}`);
+    console.error('If you believe this is a mistake, delete the lock file and try again.');
+    process.exit(1);
+  }
+  console.log(`Lock acquired (PID ${process.pid})\n`);
 
   const dryRun = args['dry-run'] === true;
   const orphansOnly = args['orphans-only'] === true;
