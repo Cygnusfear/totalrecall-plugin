@@ -14,53 +14,135 @@ import { initEmbeddings } from '../embeddings.js';
 import { RelationshipBuilder } from '../lib/relationship-builder.js';
 import { getTotalRecallDir } from '../paths.js';
 
-// Lock file to prevent multiple instances
-const LOCK_FILE = join(getTotalRecallDir(), 'rebuild-relationships.lock');
-const LOCK_STALE_MS = 4 * 60 * 60 * 1000; // 4 hours - consider lock stale after this
+// File-based semaphore to limit concurrent instances
+const SEMAPHORE_FILE = join(getTotalRecallDir(), 'rebuild-relationships.semaphore');
+const MAX_CONCURRENT = 1; // Can increase to 2-3 if system can handle it
+const HEARTBEAT_INTERVAL_MS = 30_000; // Update heartbeat every 30s
+const HEARTBEAT_STALE_MS = 2 * 60_000; // Consider worker stuck after 2 min without heartbeat
 
-function acquireLock(): boolean {
+interface WorkerEntry {
+  pid: number;
+  started: string;
+  lastHeartbeat: number;
+}
+
+interface SemaphoreData {
+  workers: WorkerEntry[];
+}
+
+let heartbeatInterval: NodeJS.Timeout | null = null;
+
+function readSemaphore(): SemaphoreData {
   try {
-    if (existsSync(LOCK_FILE)) {
-      const lockData = JSON.parse(readFileSync(LOCK_FILE, 'utf-8'));
-      const lockAge = Date.now() - lockData.timestamp;
-
-      // Check if lock is stale
-      if (lockAge > LOCK_STALE_MS) {
-        console.warn(`Stale lock found (${(lockAge / 1000 / 60).toFixed(0)} min old), removing...`);
-        unlinkSync(LOCK_FILE);
-      } else {
-        // Check if process is still running
-        try {
-          process.kill(lockData.pid, 0); // Signal 0 = check if process exists
-          return false; // Process still running
-        } catch {
-          // Process not running, lock is orphaned
-          console.warn(`Orphaned lock found (PID ${lockData.pid} not running), removing...`);
-          unlinkSync(LOCK_FILE);
-        }
-      }
+    if (existsSync(SEMAPHORE_FILE)) {
+      return JSON.parse(readFileSync(SEMAPHORE_FILE, 'utf-8'));
     }
+  } catch {
+    // Corrupted file, start fresh
+  }
+  return { workers: [] };
+}
 
-    // Create lock file
-    writeFileSync(LOCK_FILE, JSON.stringify({
-      pid: process.pid,
-      timestamp: Date.now(),
-      started: new Date().toISOString(),
-    }));
+function writeSemaphore(data: SemaphoreData): void {
+  writeFileSync(SEMAPHORE_FILE, JSON.stringify(data, null, 2));
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
     return true;
-  } catch (e) {
-    console.error('Failed to acquire lock:', e);
+  } catch {
     return false;
   }
 }
 
-function releaseLock(): void {
+function cleanStaleWorkers(data: SemaphoreData): SemaphoreData {
+  const now = Date.now();
+  const cleaned: WorkerEntry[] = [];
+
+  for (const worker of data.workers) {
+    const heartbeatAge = now - worker.lastHeartbeat;
+
+    if (!isProcessAlive(worker.pid)) {
+      console.warn(`Removing dead worker PID ${worker.pid}`);
+      continue;
+    }
+
+    if (heartbeatAge > HEARTBEAT_STALE_MS) {
+      console.warn(`Removing stuck worker PID ${worker.pid} (no heartbeat for ${(heartbeatAge / 1000).toFixed(0)}s)`);
+      // Try to kill the stuck process
+      try {
+        process.kill(worker.pid, 'SIGTERM');
+      } catch {
+        // Process might have died between checks
+      }
+      continue;
+    }
+
+    cleaned.push(worker);
+  }
+
+  return { workers: cleaned };
+}
+
+function acquireSemaphore(): boolean {
   try {
-    if (existsSync(LOCK_FILE)) {
-      const lockData = JSON.parse(readFileSync(LOCK_FILE, 'utf-8'));
-      // Only release if we own the lock
-      if (lockData.pid === process.pid) {
-        unlinkSync(LOCK_FILE);
+    let data = readSemaphore();
+    data = cleanStaleWorkers(data);
+
+    if (data.workers.length >= MAX_CONCURRENT) {
+      const pids = data.workers.map(w => w.pid).join(', ');
+      console.error(`ERROR: Max concurrent workers (${MAX_CONCURRENT}) reached. Active PIDs: ${pids}`);
+      return false;
+    }
+
+    // Add ourselves
+    data.workers.push({
+      pid: process.pid,
+      started: new Date().toISOString(),
+      lastHeartbeat: Date.now(),
+    });
+
+    writeSemaphore(data);
+
+    // Start heartbeat
+    heartbeatInterval = setInterval(updateHeartbeat, HEARTBEAT_INTERVAL_MS);
+
+    return true;
+  } catch (e) {
+    console.error('Failed to acquire semaphore:', e);
+    return false;
+  }
+}
+
+function updateHeartbeat(): void {
+  try {
+    const data = readSemaphore();
+    const worker = data.workers.find(w => w.pid === process.pid);
+    if (worker) {
+      worker.lastHeartbeat = Date.now();
+      writeSemaphore(data);
+    }
+  } catch {
+    // Ignore heartbeat errors
+  }
+}
+
+function releaseSemaphore(): void {
+  try {
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
+
+    if (existsSync(SEMAPHORE_FILE)) {
+      const data = readSemaphore();
+      data.workers = data.workers.filter(w => w.pid !== process.pid);
+
+      if (data.workers.length === 0) {
+        unlinkSync(SEMAPHORE_FILE);
+      } else {
+        writeSemaphore(data);
       }
     }
   } catch {
@@ -68,10 +150,10 @@ function releaseLock(): void {
   }
 }
 
-// Ensure lock is released on exit
-process.on('exit', releaseLock);
-process.on('SIGINT', () => { releaseLock(); process.exit(130); });
-process.on('SIGTERM', () => { releaseLock(); process.exit(143); });
+// Ensure semaphore is released on exit
+process.on('exit', releaseSemaphore);
+process.on('SIGINT', () => { releaseSemaphore(); process.exit(130); });
+process.on('SIGTERM', () => { releaseSemaphore(); process.exit(143); });
 
 function parseArgs(args: string[]) {
   const result: Record<string, string | boolean> = {};
@@ -139,14 +221,13 @@ async function main() {
     process.exit(0);
   }
 
-  // Acquire lock to prevent multiple instances
-  if (!acquireLock()) {
-    console.error('ERROR: Another rebuild-relationships process is already running.');
-    console.error(`Lock file: ${LOCK_FILE}`);
-    console.error('If you believe this is a mistake, delete the lock file and try again.');
+  // Acquire semaphore to limit concurrent instances
+  if (!acquireSemaphore()) {
+    console.error(`Semaphore file: ${SEMAPHORE_FILE}`);
+    console.error('Wait for current job to finish, or delete the semaphore file if stuck.');
     process.exit(1);
   }
-  console.log(`Lock acquired (PID ${process.pid})\n`);
+  console.log(`Semaphore acquired (PID ${process.pid}, max ${MAX_CONCURRENT} concurrent)\n`);
 
   const dryRun = args['dry-run'] === true;
   const orphansOnly = args['orphans-only'] === true;
