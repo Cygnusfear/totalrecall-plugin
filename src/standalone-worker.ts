@@ -15,6 +15,8 @@ interface WorkerConfig {
   pollInterval: number;
   stuckTimeout: number;
   maxRetries: number;
+  maxConcurrency: number;
+  cliTimeoutMs: number;
 }
 
 function loadConfig(): WorkerConfig {
@@ -31,6 +33,8 @@ function loadConfig(): WorkerConfig {
     pollInterval: Number(process.env.SYNTHESIS_POLL_INTERVAL) || 10000,
     stuckTimeout: Number(process.env.SYNTHESIS_STUCK_TIMEOUT) || 300000,
     maxRetries: Number(process.env.SYNTHESIS_MAX_RETRIES) || 3,
+    maxConcurrency: Number(process.env.SYNTHESIS_MAX_CONCURRENCY) || 5,
+    cliTimeoutMs: Number(process.env.SYNTHESIS_CLI_TIMEOUT) || 300000,
   };
 }
 
@@ -64,6 +68,8 @@ async function main(): Promise<void> {
   console.log(`  Poll Interval: ${config.pollInterval}ms`);
   console.log(`  Stuck Timeout: ${config.stuckTimeout}ms`);
   console.log(`  Max Retries: ${config.maxRetries}`);
+  console.log(`  Max Concurrency: ${config.maxConcurrency}`);
+  console.log(`  CLI Timeout: ${config.cliTimeoutMs}ms`);
 
   // Initialize database
   db = getDatabase();
@@ -83,11 +89,14 @@ async function main(): Promise<void> {
   }
 
   // Create LLM client and worker
-  const llmClient = new LLMSynthesisClient(config.apiKey);
+  const llmClient = new LLMSynthesisClient(config.apiKey, undefined, {
+    cliTimeoutMs: config.cliTimeoutMs,
+  });
   worker = new SynthesisWorker(db, llmClient, {
     batchSize: config.batchSize,
     pollInterval: config.pollInterval,
     maxRetries: config.maxRetries,
+    maxConcurrency: config.maxConcurrency,
   });
 
   // Setup graceful shutdown handlers

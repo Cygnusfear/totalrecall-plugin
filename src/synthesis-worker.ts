@@ -6,11 +6,13 @@ import type { SynthesisDatabase } from './db.js';
 import type { SynthesisQueue } from './schema.js';
 import { LLMSynthesisClient, type ConversationChunk } from './llm-synthesis.js';
 import { generateSynthesisEmbedding } from './embeddings.js';
+import { Semaphore } from './semaphore.js';
 
 export interface SynthesisWorkerConfig {
   pollInterval?: number; // ms, default 30000 (30s)
   batchSize?: number; // Process N items per poll, default 5
   maxRetries?: number; // Max retries per item, default 3
+  maxConcurrency?: number; // Max concurrent processing, default 5
 }
 
 export class SynthesisWorker {
@@ -18,7 +20,10 @@ export class SynthesisWorker {
   private pollInterval: number;
   private batchSize: number;
   private maxRetries: number;
+  private maxConcurrency: number;
   private pollTimeout: NodeJS.Timeout | null = null;
+  private semaphore: Semaphore;
+  private activeProcessing = 0;
 
   constructor(
     private db: SynthesisDatabase,
@@ -28,6 +33,8 @@ export class SynthesisWorker {
     this.pollInterval = config.pollInterval || 30000;
     this.batchSize = config.batchSize || 5;
     this.maxRetries = config.maxRetries || 3;
+    this.maxConcurrency = config.maxConcurrency || 5;
+    this.semaphore = new Semaphore(this.maxConcurrency);
   }
 
   async start(): Promise<void> {
@@ -38,7 +45,7 @@ export class SynthesisWorker {
 
     this.running = true;
     console.log(
-      `[SynthesisWorker] Started (poll: ${this.pollInterval}ms, batch: ${this.batchSize})`
+      `[SynthesisWorker] Started (poll: ${this.pollInterval}ms, batch: ${this.batchSize}, concurrency: ${this.maxConcurrency})`
     );
 
     const connected = await this.llmClient.testConnection();
@@ -56,6 +63,20 @@ export class SynthesisWorker {
     if (this.pollTimeout) {
       clearTimeout(this.pollTimeout);
       this.pollTimeout = null;
+    }
+
+    // Wait for active processing to complete (max 30 seconds)
+    const maxWait = 30000;
+    const checkInterval = 100;
+    let waited = 0;
+
+    while (this.activeProcessing > 0 && waited < maxWait) {
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      waited += checkInterval;
+    }
+
+    if (this.activeProcessing > 0) {
+      console.warn(`[SynthesisWorker] Stopped with ${this.activeProcessing} active tasks still running`);
     }
 
     console.log('[SynthesisWorker] Stopped');
@@ -76,26 +97,34 @@ export class SynthesisWorker {
   }
 
   private async processNextBatch(): Promise<void> {
+    // Fetch batchSize items but process with bounded concurrency via semaphore
+    // This prevents memory exhaustion from 100+ concurrent CLI processes
     const items = this.db.getPendingSynthesisQueue({ limit: this.batchSize });
 
     if (items.length === 0) {
       return;
     }
 
-    console.log(`[SynthesisWorker] Processing ${items.length} items`);
+    console.log(`[SynthesisWorker] Processing batch of ${items.length} items (max concurrency: ${this.maxConcurrency})`);
 
-    const results = await Promise.allSettled(
-      items.map((item) => this.processSynthesisItem(item))
-    );
+    // Process all items with bounded concurrency using semaphore
+    const promises = items.map(async (item) => {
+      await this.semaphore.withPermit(async () => {
+        this.activeProcessing++;
+        try {
+          console.log(`[SynthesisWorker] Processing item ${item.id} (session: ${item.session_id})`);
+          await this.processSynthesisItem(item);
+          console.log(`[SynthesisWorker] Item ${item.id} completed`);
+        } catch (error) {
+          // Error already logged in processSynthesisItem
+          // Continue to next item
+        } finally {
+          this.activeProcessing--;
+        }
+      });
+    });
 
-    const succeeded = results.filter((r) => r.status === 'fulfilled').length;
-    const failed = results.filter((r) => r.status === 'rejected').length;
-
-    if (failed > 0) {
-      console.warn(`[SynthesisWorker] Batch: ${succeeded} succeeded, ${failed} failed`);
-    } else {
-      console.log(`[SynthesisWorker] Batch complete: ${succeeded} processed`);
-    }
+    await Promise.all(promises);
   }
 
   private async processSynthesisItem(item: SynthesisQueue): Promise<void> {
@@ -194,12 +223,18 @@ export class SynthesisWorker {
     pollInterval: number;
     batchSize: number;
     maxRetries: number;
+    maxConcurrency: number;
+    activeProcessing: number;
+    semaphore: { available: number; waiting: number; max: number };
   } {
     return {
       running: this.running,
       pollInterval: this.pollInterval,
       batchSize: this.batchSize,
       maxRetries: this.maxRetries,
+      maxConcurrency: this.maxConcurrency,
+      activeProcessing: this.activeProcessing,
+      semaphore: this.semaphore.getStatus(),
     };
   }
 }

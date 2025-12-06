@@ -28,17 +28,20 @@ export class LLMSynthesisClient {
   private model: string;
   private cliModel: string;
   private useCliFallback: boolean;
+  private cliTimeoutMs: number;
 
   constructor(
     apiKey: string,
     model: string = 'claude-3-5-haiku-20241022',
-    options: { useCliFallback?: boolean; cliModel?: string } = {}
+    options: { useCliFallback?: boolean; cliModel?: string; cliTimeoutMs?: number } = {}
   ) {
     this.client = new Anthropic({ apiKey });
     this.model = model;
     this.useCliFallback = options.useCliFallback ?? true;
     // CLI uses different model naming - map to haiku
     this.cliModel = options.cliModel ?? 'haiku';
+    // Default 5 minute timeout for CLI processes
+    this.cliTimeoutMs = options.cliTimeoutMs ?? 300000;
   }
 
   async synthesize(
@@ -120,7 +123,7 @@ export class LLMSynthesisClient {
   }
 
   /**
-   * Fallback synthesis using Claude CLI
+   * Fallback synthesis using Claude CLI with timeout
    * Removes ANTHROPIC_API_KEY to force CLI to use subscription instead of API
    */
   private async synthesizeWithCli(prompt: string): Promise<SynthesisResult> {
@@ -138,6 +141,27 @@ export class LLMSynthesisClient {
 
       let stdout = '';
       let stderr = '';
+      let completed = false;
+
+      // Setup timeout to kill hung processes
+      const timeout = setTimeout(() => {
+        if (!completed) {
+          console.error(`[LLMSynthesis] CLI timeout after ${this.cliTimeoutMs}ms, killing process`);
+
+          // Try SIGTERM first for graceful shutdown
+          child.kill('SIGTERM');
+
+          // Force kill after 5 seconds if still running
+          setTimeout(() => {
+            if (!completed) {
+              console.error('[LLMSynthesis] CLI did not respond to SIGTERM, sending SIGKILL');
+              child.kill('SIGKILL');
+            }
+          }, 5000);
+
+          reject(new Error(`CLI fallback timeout after ${this.cliTimeoutMs}ms`));
+        }
+      }, this.cliTimeoutMs);
 
       child.stdout.on('data', (data) => {
         stdout += data.toString();
@@ -148,25 +172,34 @@ export class LLMSynthesisClient {
       });
 
       child.on('error', (err) => {
-        reject(new Error(`CLI fallback failed to spawn: ${err.message}`));
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeout);
+          reject(new Error(`CLI fallback failed to spawn: ${err.message}`));
+        }
       });
 
       child.on('close', (code) => {
-        if (code !== 0) {
-          reject(new Error(`CLI fallback exited with code ${code}: ${stderr}`));
-          return;
-        }
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeout);
 
-        try {
-          const result = this.parseResponse(stdout);
-          console.error('[LLMSynthesis] CLI fallback succeeded');
-          resolve(result);
-        } catch (parseError) {
-          reject(
-            new Error(
-              `CLI fallback parse failed: ${parseError instanceof Error ? parseError.message : String(parseError)}`
-            )
-          );
+          if (code !== 0) {
+            reject(new Error(`CLI fallback exited with code ${code}: ${stderr}`));
+            return;
+          }
+
+          try {
+            const result = this.parseResponse(stdout);
+            console.error('[LLMSynthesis] CLI fallback succeeded');
+            resolve(result);
+          } catch (parseError) {
+            reject(
+              new Error(
+                `CLI fallback parse failed: ${parseError instanceof Error ? parseError.message : String(parseError)}`
+              )
+            );
+          }
         }
       });
     });
