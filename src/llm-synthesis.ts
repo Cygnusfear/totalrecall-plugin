@@ -347,8 +347,26 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
    * Classify the relationship between two synthesis nodes using LLM
    */
   async classifyRelationship(
-    nodeA: { one_liner: string; summary: string; node_type: string },
-    nodeB: { one_liner: string; summary: string; node_type: string }
+    nodeA: {
+      one_liner: string;
+      summary: string;
+      node_type: string;
+      created_at?: number;
+      entity_name?: string | null;
+      temporal_context?: string | null;
+      source_repo?: string | null;
+      source_session_id?: string | null;
+    },
+    nodeB: {
+      one_liner: string;
+      summary: string;
+      node_type: string;
+      created_at?: number;
+      entity_name?: string | null;
+      temporal_context?: string | null;
+      source_repo?: string | null;
+      source_session_id?: string | null;
+    }
   ): Promise<RelationshipClassification> {
     const prompt = this.buildRelationshipPrompt(nodeA, nodeB);
 
@@ -421,18 +439,58 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
   }
 
   private buildRelationshipPrompt(
-    nodeA: { one_liner: string; summary: string; node_type: string },
-    nodeB: { one_liner: string; summary: string; node_type: string }
+    nodeA: {
+      one_liner: string;
+      summary: string;
+      node_type: string;
+      created_at?: number;
+      entity_name?: string | null;
+      temporal_context?: string | null;
+      source_repo?: string | null;
+      source_session_id?: string | null;
+    },
+    nodeB: {
+      one_liner: string;
+      summary: string;
+      node_type: string;
+      created_at?: number;
+      entity_name?: string | null;
+      temporal_context?: string | null;
+      source_repo?: string | null;
+      source_session_id?: string | null;
+    }
   ): string {
+    // Format timestamps
+    const formatTime = (ts?: number) => ts ? new Date(ts).toISOString() : 'unknown';
+
+    // Build metadata lines for each node
+    const metaA = [
+      nodeA.created_at ? `Created: ${formatTime(nodeA.created_at)}` : null,
+      nodeA.entity_name ? `Entity: ${nodeA.entity_name}` : null,
+      nodeA.temporal_context ? `When: ${nodeA.temporal_context}` : null,
+      nodeA.source_repo ? `Repo: ${nodeA.source_repo}` : null,
+      nodeA.source_session_id ? `Session: ${nodeA.source_session_id.slice(0, 8)}` : null,
+    ].filter(Boolean).join(' | ');
+
+    const metaB = [
+      nodeB.created_at ? `Created: ${formatTime(nodeB.created_at)}` : null,
+      nodeB.entity_name ? `Entity: ${nodeB.entity_name}` : null,
+      nodeB.temporal_context ? `When: ${nodeB.temporal_context}` : null,
+      nodeB.source_repo ? `Repo: ${nodeB.source_repo}` : null,
+      nodeB.source_session_id ? `Session: ${nodeB.source_session_id.slice(0, 8)}` : null,
+    ].filter(Boolean).join(' | ');
+
     return `You are analyzing two knowledge nodes from a memory system to determine if they have a meaningful relationship.
 
 NODE A (${nodeA.node_type}):
 Title: ${nodeA.one_liner}
 Summary: ${nodeA.summary}
+${metaA ? `Metadata: ${metaA}` : ''}
 
 NODE B (${nodeB.node_type}):
 Title: ${nodeB.one_liner}
 Summary: ${nodeB.summary}
+${metaB ? `Metadata: ${metaB}` : ''}
 
 ---
 
@@ -440,7 +498,7 @@ TASK: Determine if these nodes have a meaningful, specific relationship.
 
 RELATIONSHIP TYPES:
 - "caused": A directly led to or caused B (or vice versa)
-- "preceded": A happened before B in a workflow/sequence (or vice versa)
+- "preceded": A happened before B in a workflow/sequence (or vice versa) - USE TIMESTAMPS
 - "contains": A is a parent/container of B (or vice versa)
 - "contradicts": A and B conflict or supersede each other
 - "relates_to": A and B are meaningfully related (same topic, project, decision)
@@ -451,6 +509,8 @@ IMPORTANT:
 - There must be a SPECIFIC, MEANINGFUL connection.
 - If unsure, say no relationship.
 - "relates_to" should still require genuine topical connection, not just keyword overlap.
+- Use timestamps to determine temporal ordering for "preceded" relationships.
+- Same session/repo/entity increases likelihood of relationship but isn't sufficient alone.
 
 Return ONLY valid JSON:
 {

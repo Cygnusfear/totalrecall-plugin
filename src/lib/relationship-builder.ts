@@ -284,8 +284,26 @@ export class RelationshipBuilder {
       if (this.config.useLLM && this.llmClient) {
         try {
           const classification = await this.llmClient.classifyRelationship(
-            { one_liner: node.one_liner, summary: node.summary, node_type: node.node_type },
-            { one_liner: targetNode.one_liner, summary: targetNode.summary, node_type: targetNode.node_type }
+            {
+              one_liner: node.one_liner,
+              summary: node.summary,
+              node_type: node.node_type,
+              created_at: node.created_at,
+              entity_name: node.entity_name,
+              temporal_context: node.temporal_context,
+              source_repo: node.source_repo,
+              source_session_id: node.source_session_id,
+            },
+            {
+              one_liner: targetNode.one_liner,
+              summary: targetNode.summary,
+              node_type: targetNode.node_type,
+              created_at: targetNode.created_at,
+              entity_name: targetNode.entity_name,
+              temporal_context: targetNode.temporal_context,
+              source_repo: targetNode.source_repo,
+              source_session_id: targetNode.source_session_id,
+            }
           );
 
           if (!classification.has_relationship) {
