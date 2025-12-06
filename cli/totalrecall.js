@@ -102,6 +102,10 @@ async function main() {
         await runCommand(join(srcDir, 'standalone-worker.ts'), args);
         break;
 
+      case 'rebuild-relationships':
+        await runCommand(join(srcDir, 'cli', 'rebuild-relationships.ts'), args);
+        break;
+
       case '--help':
       case '-h':
       case undefined:
@@ -125,6 +129,13 @@ User Commands:
 
 Worker Commands:
   worker              Run standalone synthesis worker (foreground)
+
+Maintenance Commands:
+  rebuild-relationships Rebuild graph edges for orphan nodes
+                      --orphans-only  Fix disconnected nodes (recommended)
+                      --full          Rebuild all nodes (slow)
+                      --session-id=X  Rebuild specific session
+                      --dry-run       Preview without changes
 
 Environment:
   ANTHROPIC_API_KEY   Required for background synthesis
