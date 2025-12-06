@@ -370,20 +370,68 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
   ): Promise<RelationshipClassification> {
     const prompt = this.buildRelationshipPrompt(nodeA, nodeB);
 
+    // Define the tool for structured output
+    const relationshipTool: Anthropic.Tool = {
+      name: 'classify_relationship',
+      description: 'Classify the relationship between two knowledge nodes',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          has_relationship: {
+            type: 'boolean',
+            description: 'Whether a meaningful relationship exists',
+          },
+          edge_type: {
+            type: 'string',
+            enum: ['caused', 'preceded', 'contains', 'contradicts', 'relates_to'],
+            description: 'Type of relationship if one exists',
+          },
+          confidence: {
+            type: 'string',
+            enum: ['high', 'medium', 'low'],
+            description: 'Confidence level in the classification',
+          },
+          reason: {
+            type: 'string',
+            description: 'Brief explanation of why this relationship exists or does not',
+          },
+        },
+        required: ['has_relationship', 'confidence', 'reason'],
+      },
+    };
+
     try {
       const response = await this.client.messages.create({
         model: this.model,
         max_tokens: 512,
-        temperature: 0.1, // Low temperature for consistent classification
+        temperature: 0.1,
+        tools: [relationshipTool],
+        tool_choice: { type: 'tool', name: 'classify_relationship' },
         messages: [{ role: 'user', content: prompt }],
       });
 
-      const responseText = response.content
-        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-        .map((block) => block.text)
-        .join('\n');
+      // Extract tool use result
+      const toolUse = response.content.find(
+        (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
+      );
 
-      return this.parseRelationshipResponse(responseText);
+      if (!toolUse || toolUse.name !== 'classify_relationship') {
+        throw new Error('No tool use in response');
+      }
+
+      const input = toolUse.input as {
+        has_relationship: boolean;
+        edge_type?: string;
+        confidence: string;
+        reason: string;
+      };
+
+      return {
+        has_relationship: input.has_relationship,
+        edge_type: input.has_relationship ? (input.edge_type as RelationshipClassification['edge_type']) : null,
+        confidence: input.confidence as 'high' | 'medium' | 'low',
+        reason: input.reason,
+      };
     } catch (error) {
       // On API error, try CLI fallback
       if (this.useCliFallback && this.isRecoverableApiError(error)) {
