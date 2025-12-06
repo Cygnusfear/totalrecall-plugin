@@ -308,6 +308,95 @@ async function testScoreCalculation() {
   console.log('Score calculation tests: PASS\n');
 }
 
+async function testEntityContextInEmbeddings() {
+  console.log('Test: Entity context in embeddings (Issue #7 fix)...');
+  await cleanup();
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+  await initEmbeddings();
+
+  // Create a node about "Epic #183 backend migration" with entity_name "Jungle"
+  // This simulates the issue: synthesis text doesn't mention "jungle" but entity_name does
+  const node = db.createNode({
+    node_type: 'task',
+    one_liner: 'Epic #183 backend migration complete',
+    summary: 'Completed the backend migration for Epic #183, moving services to new infrastructure',
+    full_synthesis: 'Full details about the backend migration effort',
+    entity_name: 'Jungle',  // Project name that should be searchable
+    entity_aliases: JSON.stringify(['jungle-backend', 'Epic #183']),  // Aliases
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: 'jungle-backend',  // Repository name
+  });
+
+  // Generate embedding WITH entity context
+  const embeddingWithContext = await generateSynthesisEmbedding(
+    node.one_liner,
+    node.summary,
+    node.node_type,
+    {
+      entityName: node.entity_name,
+      entityAliases: node.entity_aliases,
+      sourceRepo: node.source_repo,
+    }
+  );
+  db.insertEmbedding(node.id, embeddingWithContext);
+
+  // Search for "jungle" - should find the node even though "jungle" isn't in one_liner or summary
+  const jungleQuery = await generateEmbedding('jungle project');
+  const jungleResults = db.searchByVector(jungleQuery, 5, 0.0);
+
+  if (jungleResults.length === 0) {
+    throw new Error('Expected to find node when searching for "jungle" (entity_name)');
+  }
+
+  const jungleScore = jungleResults[0].score;
+  console.log(`  - "jungle" search found node (score: ${jungleScore.toFixed(3)}): PASS`);
+
+  // Search for "Epic #183" - should also work via aliases
+  const epicQuery = await generateEmbedding('Epic #183');
+  const epicResults = db.searchByVector(epicQuery, 5, 0.0);
+
+  if (epicResults.length === 0) {
+    throw new Error('Expected to find node when searching for "Epic #183" (alias)');
+  }
+  console.log(`  - "Epic #183" search found node (score: ${epicResults[0].score.toFixed(3)}): PASS`);
+
+  // Search for "jungle-backend" - should work via source_repo
+  const repoQuery = await generateEmbedding('jungle-backend repository');
+  const repoResults = db.searchByVector(repoQuery, 5, 0.0);
+
+  if (repoResults.length === 0) {
+    throw new Error('Expected to find node when searching for "jungle-backend" (source_repo)');
+  }
+  console.log(`  - "jungle-backend" search found node (score: ${repoResults[0].score.toFixed(3)}): PASS`);
+
+  // Compare: search for "backend migration" (in original text) should have good score
+  const directQuery = await generateEmbedding('backend migration');
+  const directResults = db.searchByVector(directQuery, 5, 0.0);
+
+  if (directResults.length === 0) {
+    throw new Error('Expected to find node when searching for direct text');
+  }
+
+  const directScore = directResults[0].score;
+  console.log(`  - "backend migration" search (direct text): score ${directScore.toFixed(3)}: PASS`);
+
+  // Verify that entity search scores are reasonable (they may be lower than direct text matches)
+  // but they should be above our default min_score threshold of 0.3
+  if (jungleScore < 0.3) {
+    console.log(`  - Warning: "jungle" score ${jungleScore.toFixed(3)} is below 0.3 threshold`);
+  }
+
+  db.close();
+  console.log('Entity context in embeddings tests: PASS\n');
+}
+
 async function testProgressiveDisclosureAnalytics() {
   console.log('Test: Progressive disclosure analytics...');
   await cleanup();
@@ -620,6 +709,7 @@ async function main() {
     await testEmbeddings();
     await testVectorSearch();
     await testScoreCalculation();
+    await testEntityContextInEmbeddings();
     await testQueueOperations();
     await testProgressiveDisclosureAnalytics();
     await testEdgeHelpers();

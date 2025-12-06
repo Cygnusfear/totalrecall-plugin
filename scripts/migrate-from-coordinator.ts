@@ -264,7 +264,12 @@ async function migrate(coordinatorDbPath: string) {
         const embedding = await generateSynthesisEmbedding(
           node.one_liner,
           node.summary,
-          node.node_type
+          node.node_type,
+          {
+            entityName: node.entity_name,
+            entityAliases: node.entity_aliases,
+            sourceRepo: node.source_repo,
+          }
         );
         pluginDb.insertEmbedding(node.id, embedding);
         embedded++;

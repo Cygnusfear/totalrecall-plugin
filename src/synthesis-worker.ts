@@ -189,7 +189,10 @@ export class SynthesisWorker {
         const embedding = await generateSynthesisEmbedding(
           synthesis.one_liner,
           synthesis.summary,
-          synthesis.node_type
+          synthesis.node_type,
+          {
+            entityName: synthesis.entity_name,
+          }
         );
         this.db.insertEmbedding(node.id, embedding);
       } catch (e) {

@@ -384,7 +384,12 @@ async function handleSynthesisCreate(args: SynthesisCreateArgs) {
     const embedding = await generateSynthesisEmbedding(
       args.one_liner,
       args.summary,
-      args.node_type
+      args.node_type,
+      {
+        entityName: args.entity_name,
+        entityAliases: node.entity_aliases,
+        sourceRepo: args.source_repo,
+      }
     );
     db.insertEmbedding(node.id, embedding);
   } catch (e) {
@@ -714,7 +719,10 @@ async function handleSessionGraft(args: SessionGraftArgs) {
       const embedding = await generateSynthesisEmbedding(
         sessionNode.one_liner,
         sessionNode.summary,
-        'summary'
+        'summary',
+        {
+          sourceRepo: source_repo,
+        }
       );
       db.insertEmbedding(sessionNode.id, embedding);
     } catch (e) {
