@@ -359,6 +359,84 @@ export class SynthesisDatabase {
     };
   }
 
+  /**
+   * Check if an edge exists between two nodes (in either direction)
+   */
+  edgeExists(nodeId1: string, nodeId2: string): boolean {
+    const result = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM synthesis_edges
+      WHERE (from_node_id = ? AND to_node_id = ?)
+         OR (from_node_id = ? AND to_node_id = ?)
+    `).get(nodeId1, nodeId2, nodeId2, nodeId1) as { count: number };
+
+    return result.count > 0;
+  }
+
+  /**
+   * Get all nodes with zero edges (orphans)
+   */
+  getOrphanNodes(nodeTypes?: NodeType[]): SynthesisNode[] {
+    let query = `
+      SELECT * FROM synthesis_nodes
+      WHERE id NOT IN (
+        SELECT DISTINCT from_node_id FROM synthesis_edges
+        UNION
+        SELECT DISTINCT to_node_id FROM synthesis_edges
+      )
+    `;
+
+    const params: string[] = [];
+
+    if (nodeTypes?.length) {
+      query += ` AND node_type IN (${nodeTypes.map(() => '?').join(',')})`;
+      params.push(...nodeTypes);
+    }
+
+    query += ' ORDER BY created_at DESC';
+
+    return this.db.prepare(query).all(...params) as SynthesisNode[];
+  }
+
+  /**
+   * Get count of edges for a node
+   */
+  getEdgeCount(nodeId: string): number {
+    const result = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM synthesis_edges
+      WHERE from_node_id = ? OR to_node_id = ?
+    `).get(nodeId, nodeId) as { count: number };
+
+    return result.count;
+  }
+
+  /**
+   * Get nodes by session ID
+   */
+  getNodesBySession(sessionId: string): SynthesisNode[] {
+    return this.db.prepare(`
+      SELECT * FROM synthesis_nodes
+      WHERE source_session_id = ?
+      ORDER BY created_at ASC
+    `).all(sessionId) as SynthesisNode[];
+  }
+
+  /**
+   * Get all unique session IDs
+   */
+  getAllSessionIds(): string[] {
+    const rows = this.db.prepare(`
+      SELECT source_session_id
+      FROM synthesis_nodes
+      WHERE source_session_id IS NOT NULL
+      GROUP BY source_session_id
+      ORDER BY MIN(created_at) DESC
+    `).all() as Array<{ source_session_id: string }>;
+
+    return rows.map(r => r.source_session_id);
+  }
+
   getRelatedNodes(nodeId: string): Array<{ node: SynthesisNode; edge: SynthesisEdge }> {
     const results = this.db.prepare(`
       SELECT

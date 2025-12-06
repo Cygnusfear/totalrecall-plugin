@@ -372,6 +372,111 @@ async function testProgressiveDisclosureAnalytics() {
   console.log('Progressive disclosure analytics tests: PASS\n');
 }
 
+async function testEdgeHelpers() {
+  console.log('Test: Edge helper methods...');
+  await cleanup();
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+
+  // Create two nodes
+  const node1 = db.createNode({
+    node_type: 'learning',
+    one_liner: 'Test node 1',
+    summary: 'Summary 1',
+    full_synthesis: 'Full 1',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test-session',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const node2 = db.createNode({
+    node_type: 'decision',
+    one_liner: 'Test node 2',
+    summary: 'Summary 2',
+    full_synthesis: 'Full 2',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test-session',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  // Test edgeExists - should be false
+  if (db.edgeExists(node1.id, node2.id)) {
+    throw new Error('edgeExists should return false for non-existent edge');
+  }
+  console.log('  - edgeExists (no edge): PASS');
+
+  // Create an edge
+  db.createEdge({
+    from_node_id: node1.id,
+    to_node_id: node2.id,
+    edge_type: 'relates_to',
+    weight: 0.8,
+    context: 'test',
+  });
+
+  // Test edgeExists - should be true (forward direction)
+  if (!db.edgeExists(node1.id, node2.id)) {
+    throw new Error('edgeExists should return true for existing edge');
+  }
+  console.log('  - edgeExists (forward): PASS');
+
+  // Test edgeExists - should be true (reverse direction check)
+  if (!db.edgeExists(node2.id, node1.id)) {
+    throw new Error('edgeExists should return true for reverse direction');
+  }
+  console.log('  - edgeExists (reverse): PASS');
+
+  // Test getOrphanNodes
+  const node3 = db.createNode({
+    node_type: 'event',
+    one_liner: 'Orphan node',
+    summary: 'This node has no edges',
+    full_synthesis: 'Full 3',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test-session',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const orphans = db.getOrphanNodes();
+  if (orphans.length !== 1 || orphans[0].id !== node3.id) {
+    throw new Error(`Expected 1 orphan (node3), got ${orphans.length}`);
+  }
+  console.log('  - getOrphanNodes: PASS');
+
+  // Test getOrphanNodes with node type filter
+  const orphansFiltered = db.getOrphanNodes(['decision']);
+  if (orphansFiltered.length !== 0) {
+    throw new Error('Expected 0 orphans with decision filter');
+  }
+  console.log('  - getOrphanNodes (filtered): PASS');
+
+  db.close();
+  console.log('Edge helper tests: PASS\n');
+}
+
 async function main() {
   console.log('=== TotalRecall Integration Tests ===\n');
 
@@ -382,6 +487,7 @@ async function main() {
     await testScoreCalculation();
     await testQueueOperations();
     await testProgressiveDisclosureAnalytics();
+    await testEdgeHelpers();
 
     console.log('=== ALL TESTS PASSED ===');
     await cleanup();
