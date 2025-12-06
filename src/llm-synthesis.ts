@@ -523,8 +523,19 @@ Return ONLY valid JSON:
 
   private parseRelationshipResponse(responseText: string): RelationshipClassification {
     let cleaned = responseText.trim();
-    if (cleaned.startsWith('```')) {
+
+    // Try to extract JSON from markdown code block anywhere in response
+    const codeBlockMatch = cleaned.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+    if (codeBlockMatch) {
+      cleaned = codeBlockMatch[1].trim();
+    } else if (cleaned.startsWith('```')) {
       cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    } else {
+      // Try to find JSON object in the response
+      const jsonMatch = cleaned.match(/\{[\s\S]*"has_relationship"[\s\S]*\}/);
+      if (jsonMatch) {
+        cleaned = jsonMatch[0];
+      }
     }
 
     try {
