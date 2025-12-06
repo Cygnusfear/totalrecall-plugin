@@ -477,6 +477,141 @@ async function testEdgeHelpers() {
   console.log('Edge helper tests: PASS\n');
 }
 
+async function testRelationshipBuilder() {
+  console.log('Test: Relationship builder...');
+  await cleanup();
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+  await initEmbeddings();
+
+  // Import dynamically to test
+  const { RelationshipBuilder } = await import('../src/lib/relationship-builder.js');
+
+  // Create 3 nodes - 2 with edges, 1 orphan
+  const node1 = db.createNode({
+    node_type: 'learning',
+    one_liner: 'React hooks best practices',
+    summary: 'Learned about useEffect cleanup and dependency arrays',
+    full_synthesis: 'Full details about React hooks',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'session-1',
+    source_agent_id: null,
+    source_repo: null,
+  });
+  const emb1 = await generateSynthesisEmbedding(node1.one_liner, node1.summary, node1.node_type);
+  db.insertEmbedding(node1.id, emb1);
+
+  const node2 = db.createNode({
+    node_type: 'decision',
+    one_liner: 'Use React for frontend',
+    summary: 'Decided to use React framework for the web application',
+    full_synthesis: 'Full decision rationale',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'session-1',
+    source_agent_id: null,
+    source_repo: null,
+  });
+  const emb2 = await generateSynthesisEmbedding(node2.one_liner, node2.summary, node2.node_type);
+  db.insertEmbedding(node2.id, emb2);
+
+  // Create edge between node1 and node2
+  db.createEdge({
+    from_node_id: node1.id,
+    to_node_id: node2.id,
+    edge_type: 'relates_to',
+    weight: 0.8,
+    context: 'existing',
+  });
+
+  // Orphan node (related to React but no edges)
+  const orphan = db.createNode({
+    node_type: 'learning',
+    one_liner: 'React state management patterns',
+    summary: 'Patterns for managing state in React applications',
+    full_synthesis: 'Full state management guide',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'session-1',
+    source_agent_id: null,
+    source_repo: null,
+  });
+  const embOrphan = await generateSynthesisEmbedding(orphan.one_liner, orphan.summary, orphan.node_type);
+  db.insertEmbedding(orphan.id, embOrphan);
+
+  // Verify orphan exists
+  const orphansBefore = db.getOrphanNodes();
+  if (orphansBefore.length !== 1) {
+    throw new Error(`Expected 1 orphan before rebuild, got ${orphansBefore.length}`);
+  }
+  console.log('  - Initial orphan count: PASS');
+
+  // Run relationship builder (dry run first)
+  const builder = new RelationshipBuilder(db, {
+    minSimilarity: 0.5,
+    maxEdgesPerNode: 5,
+    batchSize: 10,
+    dryRun: true,
+    verbose: false,
+  });
+
+  const dryRunStats = await builder.rebuildOrphans();
+  if (dryRunStats.edgesCreated === 0) {
+    throw new Error('Dry run should have found edges to create');
+  }
+  console.log(`  - Dry run found ${dryRunStats.edgesCreated} potential edges: PASS`);
+
+  // Verify no edges were actually created (dry run)
+  const orphansAfterDry = db.getOrphanNodes();
+  if (orphansAfterDry.length !== 1) {
+    throw new Error('Dry run should not create edges');
+  }
+  console.log('  - Dry run did not modify DB: PASS');
+
+  // Run actual rebuild
+  const realBuilder = new RelationshipBuilder(db, {
+    minSimilarity: 0.5,
+    maxEdgesPerNode: 5,
+    batchSize: 10,
+    dryRun: false,
+    verbose: false,
+  });
+
+  const realStats = await realBuilder.rebuildOrphans();
+  if (realStats.edgesCreated === 0) {
+    throw new Error('Real rebuild should have created edges');
+  }
+  console.log(`  - Real rebuild created ${realStats.edgesCreated} edges: PASS`);
+
+  // Verify orphan is now connected
+  const orphansAfter = db.getOrphanNodes();
+  if (orphansAfter.length !== 0) {
+    throw new Error(`Expected 0 orphans after rebuild, got ${orphansAfter.length}`);
+  }
+  console.log('  - Orphan now connected: PASS');
+
+  db.close();
+  console.log('Relationship builder tests: PASS\n');
+}
+
 async function main() {
   console.log('=== TotalRecall Integration Tests ===\n');
 
@@ -488,6 +623,7 @@ async function main() {
     await testQueueOperations();
     await testProgressiveDisclosureAnalytics();
     await testEdgeHelpers();
+    await testRelationshipBuilder();
 
     console.log('=== ALL TESTS PASSED ===');
     await cleanup();
