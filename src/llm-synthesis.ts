@@ -16,6 +16,13 @@ export interface SynthesisResult {
   entity_name?: string;
 }
 
+export interface RelationshipClassification {
+  has_relationship: boolean;
+  edge_type: 'relates_to' | 'caused' | 'preceded' | 'contains' | 'contradicts' | null;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+}
+
 export interface ConversationChunk {
   id: string;
   content: string;
@@ -334,5 +341,211 @@ Return ONLY valid JSON with this exact structure (no markdown, no explanation):
       console.error('LLM synthesis client test failed:', error);
       return false;
     }
+  }
+
+  /**
+   * Classify the relationship between two synthesis nodes using LLM
+   */
+  async classifyRelationship(
+    nodeA: { one_liner: string; summary: string; node_type: string },
+    nodeB: { one_liner: string; summary: string; node_type: string }
+  ): Promise<RelationshipClassification> {
+    const prompt = this.buildRelationshipPrompt(nodeA, nodeB);
+
+    try {
+      const response = await this.client.messages.create({
+        model: this.model,
+        max_tokens: 512,
+        temperature: 0.1, // Low temperature for consistent classification
+        messages: [{ role: 'user', content: prompt }],
+      });
+
+      const responseText = response.content
+        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+        .map((block) => block.text)
+        .join('\n');
+
+      return this.parseRelationshipResponse(responseText);
+    } catch (error) {
+      // On API error, try CLI fallback
+      if (this.useCliFallback && this.isRecoverableApiError(error)) {
+        console.error(
+          `[LLMSynthesis] Relationship classification SDK failed, falling back to CLI`
+        );
+        return this.classifyRelationshipWithCli(prompt);
+      }
+      throw new Error(
+        `Relationship classification failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  /**
+   * Batch classify relationships (more efficient for many pairs)
+   */
+  async classifyRelationshipsBatch(
+    pairs: Array<{
+      nodeA: { id: string; one_liner: string; summary: string; node_type: string };
+      nodeB: { id: string; one_liner: string; summary: string; node_type: string };
+      similarity: number;
+    }>
+  ): Promise<Array<{ nodeAId: string; nodeBId: string; classification: RelationshipClassification }>> {
+    const results: Array<{ nodeAId: string; nodeBId: string; classification: RelationshipClassification }> = [];
+
+    // Process sequentially to avoid rate limits
+    for (const pair of pairs) {
+      try {
+        const classification = await this.classifyRelationship(pair.nodeA, pair.nodeB);
+        results.push({
+          nodeAId: pair.nodeA.id,
+          nodeBId: pair.nodeB.id,
+          classification,
+        });
+      } catch (error) {
+        // Log and continue on error
+        console.error(`Failed to classify ${pair.nodeA.id} <-> ${pair.nodeB.id}:`, error);
+        results.push({
+          nodeAId: pair.nodeA.id,
+          nodeBId: pair.nodeB.id,
+          classification: {
+            has_relationship: false,
+            edge_type: null,
+            confidence: 'low',
+            reason: `Classification failed: ${error instanceof Error ? error.message : String(error)}`,
+          },
+        });
+      }
+    }
+
+    return results;
+  }
+
+  private buildRelationshipPrompt(
+    nodeA: { one_liner: string; summary: string; node_type: string },
+    nodeB: { one_liner: string; summary: string; node_type: string }
+  ): string {
+    return `You are analyzing two knowledge nodes from a memory system to determine if they have a meaningful relationship.
+
+NODE A (${nodeA.node_type}):
+Title: ${nodeA.one_liner}
+Summary: ${nodeA.summary}
+
+NODE B (${nodeB.node_type}):
+Title: ${nodeB.one_liner}
+Summary: ${nodeB.summary}
+
+---
+
+TASK: Determine if these nodes have a meaningful, specific relationship.
+
+RELATIONSHIP TYPES:
+- "caused": A directly led to or caused B (or vice versa)
+- "preceded": A happened before B in a workflow/sequence (or vice versa)
+- "contains": A is a parent/container of B (or vice versa)
+- "contradicts": A and B conflict or supersede each other
+- "relates_to": A and B are meaningfully related (same topic, project, decision)
+- null: No meaningful relationship (just coincidentally similar words)
+
+IMPORTANT:
+- Be STRICT. Just mentioning similar terms (e.g., both mention "React") is NOT enough.
+- There must be a SPECIFIC, MEANINGFUL connection.
+- If unsure, say no relationship.
+- "relates_to" should still require genuine topical connection, not just keyword overlap.
+
+Return ONLY valid JSON:
+{
+  "has_relationship": true | false,
+  "edge_type": "caused" | "preceded" | "contains" | "contradicts" | "relates_to" | null,
+  "confidence": "high" | "medium" | "low",
+  "reason": "Brief explanation of why this relationship exists or doesn't"
+}`;
+  }
+
+  private parseRelationshipResponse(responseText: string): RelationshipClassification {
+    let cleaned = responseText.trim();
+    if (cleaned.startsWith('```')) {
+      cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
+    }
+
+    try {
+      const parsed = JSON.parse(cleaned);
+
+      const validEdgeTypes = ['caused', 'preceded', 'contains', 'contradicts', 'relates_to', null];
+      if (parsed.has_relationship && !validEdgeTypes.includes(parsed.edge_type)) {
+        throw new Error(`Invalid edge_type: ${parsed.edge_type}`);
+      }
+
+      return {
+        has_relationship: Boolean(parsed.has_relationship),
+        edge_type: parsed.has_relationship ? parsed.edge_type : null,
+        confidence: parsed.confidence || 'medium',
+        reason: parsed.reason || 'No reason provided',
+      };
+    } catch (error) {
+      throw new Error(
+        `Failed to parse relationship response: ${error instanceof Error ? error.message : String(error)}\n\nResponse: ${responseText}`
+      );
+    }
+  }
+
+  private async classifyRelationshipWithCli(prompt: string): Promise<RelationshipClassification> {
+    return new Promise((resolve, reject) => {
+      const args = [
+        '-p', prompt,
+        '--model', this.cliModel,
+        '--output-format', 'text',
+        '--mcp-config', '{"mcpServers":{}}',
+        '--strict-mcp-config',
+      ];
+
+      const env = { ...process.env };
+      delete env.ANTHROPIC_API_KEY;
+
+      const child = spawn('claude', args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env,
+      });
+
+      let stdout = '';
+      let stderr = '';
+      let completed = false;
+
+      const timeout = setTimeout(() => {
+        if (!completed) {
+          child.kill('SIGTERM');
+          setTimeout(() => {
+            if (!completed) child.kill('SIGKILL');
+          }, 5000);
+          reject(new Error(`CLI relationship classification timeout`));
+        }
+      }, this.cliTimeoutMs);
+
+      child.stdout.on('data', (data) => { stdout += data.toString(); });
+      child.stderr.on('data', (data) => { stderr += data.toString(); });
+
+      child.on('error', (err) => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeout);
+          reject(new Error(`CLI fallback failed: ${err.message}`));
+        }
+      });
+
+      child.on('close', (code) => {
+        if (!completed) {
+          completed = true;
+          clearTimeout(timeout);
+          if (code !== 0) {
+            reject(new Error(`CLI exited with code ${code}: ${stderr}`));
+            return;
+          }
+          try {
+            resolve(this.parseRelationshipResponse(stdout));
+          } catch (parseError) {
+            reject(parseError);
+          }
+        }
+      });
+    });
   }
 }

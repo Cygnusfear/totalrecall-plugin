@@ -1,37 +1,75 @@
 /**
  * Relationship Builder - Rebuilds graph edges for orphan nodes
  *
- * Uses semantic similarity (embeddings), session context, and temporal
- * relationships to connect disconnected nodes in the synthesis graph.
+ * Uses semantic similarity (embeddings) + LLM validation for accurate
+ * relationship classification. Always backs up the database before changes.
  */
 
+import { copyFileSync, existsSync } from 'fs';
 import type { SynthesisDatabase } from '../db.js';
 import type { SynthesisNode, NodeType, EdgeType } from '../schema.js';
 import { generateSynthesisEmbedding } from '../embeddings.js';
+import { LLMSynthesisClient, type RelationshipClassification } from '../llm-synthesis.js';
+import { getDbPath } from '../paths.js';
 
 export interface RelationshipBuilderConfig {
-  minSimilarity: number;      // Minimum cosine similarity (0-1)
+  minSimilarity: number;      // Minimum cosine similarity (0-1) for candidates
   maxEdgesPerNode: number;    // Max edges to create per node
   batchSize: number;          // Nodes per batch
   dryRun: boolean;            // Preview without changes
   verbose: boolean;           // Detailed logging
+  useLLM: boolean;            // Use LLM to validate relationships (slower but accurate)
+  llmModel?: string;          // LLM model to use (default: haiku)
 }
 
 export interface RelationshipStats {
   nodesProcessed: number;
   edgesCreated: number;
+  edgesRejectedByLLM: number;  // Candidates rejected by LLM as "no relationship"
   edgesSkipped: number;
   orphansFixed: number;
   duplicatesSkipped: number;
   noEmbeddingSkipped: number;
   errors: number;
+  backupPath: string | null;
 }
 
 export class RelationshipBuilder {
+  private llmClient: LLMSynthesisClient | null = null;
+
   constructor(
     private db: SynthesisDatabase,
     private config: RelationshipBuilderConfig
-  ) {}
+  ) {
+    // Initialize LLM client if needed
+    if (config.useLLM) {
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (!apiKey) {
+        console.warn('[RelationshipBuilder] No ANTHROPIC_API_KEY, will use CLI fallback for LLM');
+      }
+      this.llmClient = new LLMSynthesisClient(
+        apiKey || 'dummy-key-for-cli-fallback',
+        config.llmModel || 'claude-3-5-haiku-20241022',
+        { useCliFallback: true, cliModel: 'haiku' }
+      );
+    }
+  }
+
+  /**
+   * Backup the database before making changes
+   */
+  private backupDatabase(): string {
+    const dbPath = getDbPath();
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const backupPath = `${dbPath}.backup-${timestamp}`;
+
+    if (existsSync(dbPath)) {
+      copyFileSync(dbPath, backupPath);
+      console.log(`Database backed up to: ${backupPath}`);
+    }
+
+    return backupPath;
+  }
 
   /**
    * Rebuild relationships for orphan nodes only
@@ -40,11 +78,13 @@ export class RelationshipBuilder {
     const stats: RelationshipStats = {
       nodesProcessed: 0,
       edgesCreated: 0,
+      edgesRejectedByLLM: 0,
       edgesSkipped: 0,
       orphansFixed: 0,
       duplicatesSkipped: 0,
       noEmbeddingSkipped: 0,
       errors: 0,
+      backupPath: null,
     };
 
     const orphans = this.db.getOrphanNodes();
@@ -55,6 +95,11 @@ export class RelationshipBuilder {
 
     if (orphans.length === 0) {
       return stats;
+    }
+
+    // Backup before making changes (not in dry-run)
+    if (!this.config.dryRun) {
+      stats.backupPath = this.backupDatabase();
     }
 
     // Process in batches
@@ -93,17 +138,24 @@ export class RelationshipBuilder {
     const stats: RelationshipStats = {
       nodesProcessed: 0,
       edgesCreated: 0,
+      edgesRejectedByLLM: 0,
       edgesSkipped: 0,
       orphansFixed: 0,
       duplicatesSkipped: 0,
       noEmbeddingSkipped: 0,
       errors: 0,
+      backupPath: null,
     };
 
     const allNodes = this.db.queryNodes({ limit: 10000, order_by: 'created_at' });
 
     if (this.config.verbose) {
       console.log(`Processing ${allNodes.length} total nodes`);
+    }
+
+    // Backup before making changes (not in dry-run)
+    if (!this.config.dryRun) {
+      stats.backupPath = this.backupDatabase();
     }
 
     // Process in batches
@@ -139,17 +191,24 @@ export class RelationshipBuilder {
     const stats: RelationshipStats = {
       nodesProcessed: 0,
       edgesCreated: 0,
+      edgesRejectedByLLM: 0,
       edgesSkipped: 0,
       orphansFixed: 0,
       duplicatesSkipped: 0,
       noEmbeddingSkipped: 0,
       errors: 0,
+      backupPath: null,
     };
 
     const sessionNodes = this.db.getNodesBySession(sessionId);
 
     if (this.config.verbose) {
       console.log(`Processing ${sessionNodes.length} nodes in session ${sessionId}`);
+    }
+
+    // Backup before making changes (not in dry-run)
+    if (!this.config.dryRun) {
+      stats.backupPath = this.backupDatabase();
     }
 
     // Phase 1: Create session hierarchy (summary -> children)
@@ -178,7 +237,7 @@ export class RelationshipBuilder {
   }
 
   /**
-   * Create edges for a single node using semantic similarity
+   * Create edges for a single node using semantic similarity + optional LLM validation
    */
   private async createEdgesForNode(
     node: SynthesisNode,
@@ -191,7 +250,7 @@ export class RelationshipBuilder {
       node.node_type
     );
 
-    // Search for similar nodes
+    // Search for similar nodes (candidates)
     const candidates = this.db.searchByVector(
       embedding,
       this.config.maxEdgesPerNode * 3, // Over-fetch for filtering
@@ -210,14 +269,48 @@ export class RelationshipBuilder {
         continue;
       }
 
-      // Determine edge type
       const targetNode = this.db.getNode(candidate.node_id);
       if (!targetNode) continue;
 
-      const edgeType = this.determineEdgeType(node, targetNode);
+      // Determine edge type - use LLM if enabled, otherwise heuristics
+      let edgeType: EdgeType;
+      let shouldCreate = true;
 
-      if (this.config.verbose) {
-        console.log(`  ${node.id.slice(0, 8)} -> ${candidate.node_id.slice(0, 8)} (${edgeType}, score: ${candidate.score.toFixed(2)})`);
+      if (this.config.useLLM && this.llmClient) {
+        try {
+          const classification = await this.llmClient.classifyRelationship(
+            { one_liner: node.one_liner, summary: node.summary, node_type: node.node_type },
+            { one_liner: targetNode.one_liner, summary: targetNode.summary, node_type: targetNode.node_type }
+          );
+
+          if (!classification.has_relationship) {
+            stats.edgesRejectedByLLM++;
+            if (this.config.verbose) {
+              console.log(`  REJECTED: ${node.id.slice(0, 8)} <-> ${candidate.node_id.slice(0, 8)}`);
+              console.log(`    Reason: ${classification.reason}`);
+            }
+            continue;
+          }
+
+          edgeType = classification.edge_type as EdgeType;
+
+          if (this.config.verbose) {
+            console.log(`  ${node.id.slice(0, 8)} -> ${candidate.node_id.slice(0, 8)} (${edgeType}, LLM: ${classification.confidence})`);
+            console.log(`    Reason: ${classification.reason}`);
+          }
+        } catch (error) {
+          // Fallback to heuristics on LLM error
+          if (this.config.verbose) {
+            console.warn(`  LLM classification failed, using heuristics: ${error}`);
+          }
+          edgeType = this.determineEdgeType(node, targetNode);
+        }
+      } else {
+        edgeType = this.determineEdgeType(node, targetNode);
+
+        if (this.config.verbose) {
+          console.log(`  ${node.id.slice(0, 8)} -> ${candidate.node_id.slice(0, 8)} (${edgeType}, score: ${candidate.score.toFixed(2)})`);
+        }
       }
 
       if (!this.config.dryRun) {
@@ -226,7 +319,7 @@ export class RelationshipBuilder {
           to_node_id: candidate.node_id,
           edge_type: edgeType,
           weight: candidate.score,
-          context: 'auto-rebuilt (semantic)',
+          context: this.config.useLLM ? 'auto-rebuilt (LLM validated)' : 'auto-rebuilt (semantic)',
         });
       }
 
@@ -332,7 +425,7 @@ export class RelationshipBuilder {
   }
 
   /**
-   * Determine edge type based on node types
+   * Determine edge type based on node types (heuristic fallback)
    */
   private determineEdgeType(from: SynthesisNode, to: SynthesisNode): EdgeType {
     // Decision -> Task: caused

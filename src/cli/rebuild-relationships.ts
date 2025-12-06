@@ -1,6 +1,10 @@
 /**
  * CLI: rebuild-relationships
  * Rebuild graph edges for orphan or all nodes
+ *
+ * Supports two modes:
+ * 1. Semantic similarity only (fast, may have false positives)
+ * 2. LLM-validated (slower, more accurate - uses Claude to verify relationships)
  */
 
 import { getDatabase } from '../db.js';
@@ -25,38 +29,59 @@ function printHelp() {
 
 Usage: totalrecall rebuild-relationships [OPTIONS]
 
-Options:
-  --dry-run              Show what would be done without making changes
+Modes (pick one):
   --orphans-only         Only rebuild relationships for orphan nodes (RECOMMENDED)
   --full                 Rebuild relationships for all nodes (SLOW)
   --session-id=<id>      Rebuild relationships for specific session
-  --min-similarity=0.5   Minimum similarity score for relationships (default: 0.5)
+
+Options:
+  --dry-run              Show what would be done without making changes
+  --use-llm              Use Claude to validate relationships (slower but accurate)
+  --min-similarity=0.5   Minimum similarity score for candidates (default: 0.5)
   --max-edges=5          Max edges to create per node (default: 5)
   --batch-size=50        Nodes to process per batch (default: 50)
   --verbose              Show detailed progress
 
+LLM Mode:
+  When --use-llm is enabled:
+  - Each candidate pair is sent to Claude for validation
+  - Claude determines: is this a real relationship? what type?
+  - Spurious matches (keyword overlap only) are rejected
+  - Uses Claude CLI (subscription) if no API key set
+
+  Without --use-llm:
+  - Relationships are based on embedding similarity only
+  - Faster but may create false positive connections
+
 Examples:
-  # Dry run to see what would be done
+  # Preview what would be done (no changes)
   totalrecall rebuild-relationships --orphans-only --dry-run
 
-  # Rebuild relationships for orphan nodes
+  # Fast rebuild using similarity only
   totalrecall rebuild-relationships --orphans-only
 
-  # Rebuild for specific session
-  totalrecall rebuild-relationships --session-id=abc-123
+  # Accurate rebuild with LLM validation (recommended for production)
+  totalrecall rebuild-relationships --orphans-only --use-llm --verbose
 
-  # Full rebuild (SLOW)
-  totalrecall rebuild-relationships --full --verbose
+  # Full rebuild with LLM (very slow, use for initial setup)
+  totalrecall rebuild-relationships --full --use-llm --batch-size=10 --verbose
 `);
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
 
+  // Check for help first
+  if (args['help'] === true || args['h'] === true) {
+    printHelp();
+    process.exit(0);
+  }
+
   const dryRun = args['dry-run'] === true;
   const orphansOnly = args['orphans-only'] === true;
   const full = args['full'] === true;
   const verbose = args['verbose'] === true;
+  const useLLM = args['use-llm'] === true;
   const sessionId = typeof args['session-id'] === 'string' ? args['session-id'] : undefined;
   const minSimilarity = typeof args['min-similarity'] === 'string'
     ? parseFloat(args['min-similarity'])
@@ -84,6 +109,7 @@ async function main() {
   console.log(`  Min similarity: ${minSimilarity}`);
   console.log(`  Max edges/node: ${maxEdges}`);
   console.log(`  Batch size:     ${batchSize}`);
+  console.log(`  LLM validation: ${useLLM ? 'ENABLED (accurate but slower)' : 'disabled (fast)'}`);
   console.log('');
 
   const db = getDatabase();
@@ -105,6 +131,7 @@ async function main() {
     batchSize,
     dryRun,
     verbose,
+    useLLM,
   });
 
   const startTime = Date.now();
@@ -129,10 +156,18 @@ async function main() {
     console.log('====================================');
     console.log(`Nodes processed:      ${stats!.nodesProcessed}`);
     console.log(`Edges created:        ${stats!.edgesCreated}`);
+    if (useLLM) {
+      console.log(`Rejected by LLM:      ${stats!.edgesRejectedByLLM}`);
+    }
     console.log(`Duplicates skipped:   ${stats!.duplicatesSkipped}`);
     console.log(`Orphans fixed:        ${stats!.orphansFixed}`);
     console.log(`Errors:               ${stats!.errors}`);
     console.log(`Duration:             ${duration}s`);
+
+    if (stats!.backupPath) {
+      console.log('');
+      console.log(`Backup created:       ${stats!.backupPath}`);
+    }
 
     if (!dryRun) {
       const orphansAfter = db.getOrphanNodes();
