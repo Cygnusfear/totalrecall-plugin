@@ -100,3 +100,32 @@ export interface ProgressiveDisclosureEvent {
   message_tokens: number | null;
   created_at: number;
 }
+
+// ============ TIME-BASED SUMMARIES ============
+
+// Time summary types for hourly and daily roll-ups
+export type TimeSummaryPeriod = 'hourly' | 'daily';
+export type TimeSummaryStatus = 'pending' | 'processing' | 'completed' | 'failed';
+
+export interface TimeSummary {
+  id: number;
+  period_type: TimeSummaryPeriod;
+  period_start: number; // Start of the period (timestamp ms)
+  period_end: number; // End of the period (timestamp ms)
+  synthesis_node_id: string | null; // ID of the generated summary node
+  source_node_ids: string; // JSON array of node IDs that were summarized
+  source_node_count: number;
+  status: TimeSummaryStatus;
+  error: string | null;
+  created_at: number;
+  completed_at: number | null;
+}
+
+// Configuration for time summary generation
+export interface TimeSummaryConfig {
+  enableHourly: boolean;
+  enableDaily: boolean;
+  hourlyDelay: number; // How many minutes after hour end to run (default: 5)
+  dailyHour: number; // Hour of day to run daily summary (0-23, default: 2)
+  minNodesForSummary: number; // Minimum nodes required to generate summary (default: 3)
+}

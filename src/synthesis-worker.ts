@@ -7,6 +7,7 @@ import type { SynthesisQueue, SynthesisNode, EdgeType } from './schema.js';
 import { LLMSynthesisClient, type ConversationChunk } from './llm-synthesis.js';
 import { generateSynthesisEmbedding } from './embeddings.js';
 import { Semaphore } from './semaphore.js';
+import { TimeSummaryService, type TimeSummaryServiceConfig } from './time-summary-service.js';
 
 // Config for auto-relationship building
 const AUTO_RELATIONSHIP_CONFIG = {
@@ -20,6 +21,7 @@ export interface SynthesisWorkerConfig {
   batchSize?: number; // Process N items per poll, default 5
   maxRetries?: number; // Max retries per item, default 3
   maxConcurrency?: number; // Max concurrent processing, default 5
+  timeSummary?: TimeSummaryServiceConfig; // Config for time-based summaries
 }
 
 export class SynthesisWorker {
@@ -31,6 +33,7 @@ export class SynthesisWorker {
   private pollTimeout: NodeJS.Timeout | null = null;
   private semaphore: Semaphore;
   private activeProcessing = 0;
+  private timeSummaryService: TimeSummaryService;
 
   constructor(
     private db: SynthesisDatabase,
@@ -42,6 +45,14 @@ export class SynthesisWorker {
     this.maxRetries = config.maxRetries || 3;
     this.maxConcurrency = config.maxConcurrency || 5;
     this.semaphore = new Semaphore(this.maxConcurrency);
+    this.timeSummaryService = new TimeSummaryService(db, llmClient, config.timeSummary);
+  }
+
+  /**
+   * Get the time summary service for external access (e.g., MCP tools)
+   */
+  getTimeSummaryService(): TimeSummaryService {
+    return this.timeSummaryService;
   }
 
   async start(): Promise<void> {
@@ -92,15 +103,30 @@ export class SynthesisWorker {
   private poll(): void {
     if (!this.running) return;
 
-    this.processNextBatch()
+    this.runPollCycle()
       .catch((error) => {
-        console.error('[SynthesisWorker] Batch processing error:', error);
+        console.error('[SynthesisWorker] Poll cycle error:', error);
       })
       .finally(() => {
         if (this.running) {
           this.pollTimeout = setTimeout(() => this.poll(), this.pollInterval);
         }
       });
+  }
+
+  /**
+   * Run a single poll cycle: check time summaries, then process synthesis queue
+   */
+  private async runPollCycle(): Promise<void> {
+    // Check and generate time summaries (hourly/daily roll-ups)
+    try {
+      await this.timeSummaryService.checkAndGenerateSummaries();
+    } catch (error) {
+      console.error('[SynthesisWorker] Time summary error:', error);
+    }
+
+    // Process regular synthesis queue
+    await this.processNextBatch();
   }
 
   private async processNextBatch(): Promise<void> {

@@ -15,7 +15,7 @@ import { getDatabase, SynthesisDatabase } from './db.js';
 import { generateSynthesisEmbedding, generateEmbedding, initEmbeddings } from './embeddings.js';
 import { SynthesisWorker } from './synthesis-worker.js';
 import { LLMSynthesisClient } from './llm-synthesis.js';
-import type { NodeType, EdgeType } from './schema.js';
+import type { NodeType, EdgeType, TimeSummaryPeriod } from './schema.js';
 
 let db: SynthesisDatabase;
 let synthesisWorker: SynthesisWorker | null = null;
@@ -275,6 +275,60 @@ Use this to monitor performance:
       },
     },
   },
+  {
+    name: 'time_summary_status',
+    description: `Get status of automatic time-based summaries (hourly/daily roll-ups).
+
+Shows:
+- Completed and pending summaries by type
+- Last generated summary timestamps
+- Worker status for time summary processing
+
+Use this to monitor the automatic "What happened this hour/today" summary generation.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        include_recent: {
+          type: 'boolean',
+          description: 'Include list of recent summaries (default: true)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Number of recent summaries to include (default: 10)',
+        },
+      },
+    },
+  },
+  {
+    name: 'generate_time_summary',
+    description: `Manually trigger generation of a time-based summary for a specific period.
+
+Use this to:
+- Backfill missing hourly/daily summaries
+- Generate an on-demand summary for a specific time range
+- Test the time summary system
+
+The summary will be created as a synthesis node with 'contains' edges to all source nodes.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        period_type: {
+          type: 'string',
+          enum: ['hourly', 'daily'],
+          description: 'Type of summary to generate',
+        },
+        period_start: {
+          type: 'number',
+          description: 'Start of the period (Unix timestamp in milliseconds)',
+        },
+        period_end: {
+          type: 'number',
+          description: 'End of the period (Unix timestamp in milliseconds)',
+        },
+      },
+      required: ['period_type', 'period_start', 'period_end'],
+    },
+  },
 ];
 
 // List tools handler
@@ -320,6 +374,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'progressive_disclosure_stats':
         result = await handleProgressiveDisclosureStats(args as unknown as ProgressiveDisclosureStatsArgs);
+        break;
+
+      case 'time_summary_status':
+        result = await handleTimeSummaryStatus(args as unknown as TimeSummaryStatusArgs);
+        break;
+
+      case 'generate_time_summary':
+        result = await handleGenerateTimeSummary(args as unknown as GenerateTimeSummaryArgs);
         break;
 
       default:
@@ -954,6 +1016,133 @@ async function handleProgressiveDisclosureStats(args: ProgressiveDisclosureStats
     return {
       error: 'Failed to get stats',
       message: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+// ============ Time Summary Handlers ============
+
+interface TimeSummaryStatusArgs {
+  include_recent?: boolean;
+  limit?: number;
+}
+
+async function handleTimeSummaryStatus(args: TimeSummaryStatusArgs) {
+  const { include_recent = true, limit = 10 } = args;
+
+  try {
+    // Get time summary service stats if worker is running
+    let serviceStats = null;
+    if (synthesisWorker) {
+      const timeSummaryService = synthesisWorker.getTimeSummaryService();
+      serviceStats = timeSummaryService.getStats();
+    }
+
+    // Get recent summaries if requested
+    let recentSummaries: Array<{
+      id: number;
+      period_type: string;
+      period_start: number;
+      period_end: number;
+      status: string;
+      source_node_count: number;
+      synthesis_node_id: string | null;
+      created_at: number;
+    }> = [];
+
+    if (include_recent) {
+      const summaries = db.getTimeSummaries({ limit });
+      recentSummaries = summaries.map(s => ({
+        id: s.id,
+        period_type: s.period_type,
+        period_start: s.period_start,
+        period_end: s.period_end,
+        status: s.status,
+        source_node_count: s.source_node_count,
+        synthesis_node_id: s.synthesis_node_id,
+        created_at: s.created_at,
+      }));
+    }
+
+    return {
+      enabled: synthesisWorker !== null,
+      stats: serviceStats ? {
+        hourly: {
+          completed: serviceStats.hourlyCompleted,
+          pending: serviceStats.hourlyPending,
+          last_summary: serviceStats.lastHourlySummary?.toISOString() ?? null,
+        },
+        daily: {
+          completed: serviceStats.dailyCompleted,
+          pending: serviceStats.dailyPending,
+          last_summary: serviceStats.lastDailySummary?.toISOString() ?? null,
+        },
+      } : null,
+      recent_summaries: recentSummaries,
+      message: synthesisWorker
+        ? `Time summary service active. ${serviceStats?.hourlyCompleted ?? 0} hourly, ${serviceStats?.dailyCompleted ?? 0} daily summaries completed.`
+        : 'Time summary service not running (synthesis worker disabled)',
+    };
+  } catch (error) {
+    return {
+      error: 'Failed to get time summary status',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      enabled: false,
+      stats: null,
+      recent_summaries: [],
+    };
+  }
+}
+
+interface GenerateTimeSummaryArgs {
+  period_type: TimeSummaryPeriod;
+  period_start: number;
+  period_end: number;
+}
+
+async function handleGenerateTimeSummary(args: GenerateTimeSummaryArgs) {
+  const { period_type, period_start, period_end } = args;
+
+  try {
+    if (!synthesisWorker) {
+      return {
+        error: 'Synthesis worker not running',
+        message: 'Cannot generate time summary without an active synthesis worker. Ensure ANTHROPIC_API_KEY is set.',
+        success: false,
+      };
+    }
+
+    const timeSummaryService = synthesisWorker.getTimeSummaryService();
+    const result = await timeSummaryService.manuallyGenerateSummary(period_type, period_start, period_end);
+
+    if (result.success) {
+      return {
+        success: true,
+        summary_id: result.summaryId,
+        node_id: result.nodeId,
+        period_type,
+        period_start,
+        period_end,
+        period_start_formatted: new Date(period_start).toISOString(),
+        period_end_formatted: new Date(period_end).toISOString(),
+        message: `Successfully generated ${period_type} summary. Node ID: ${result.nodeId}`,
+      };
+    } else {
+      return {
+        success: false,
+        error: result.error,
+        summary_id: result.summaryId,
+        period_type,
+        period_start,
+        period_end,
+        message: `Failed to generate ${period_type} summary: ${result.error}`,
+      };
+    }
+  } catch (error) {
+    return {
+      error: 'Failed to generate time summary',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      success: false,
     };
   }
 }

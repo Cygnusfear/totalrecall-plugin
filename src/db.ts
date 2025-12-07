@@ -20,7 +20,10 @@ import type {
   SynthesisQueueStatus,
   SynthesisQueueChunkType,
   ProgressiveDisclosureEvent,
-  ProgressiveDisclosureEventType
+  ProgressiveDisclosureEventType,
+  TimeSummary,
+  TimeSummaryPeriod,
+  TimeSummaryStatus
 } from './schema.js';
 
 // macOS requires custom SQLite for extension support
@@ -205,6 +208,30 @@ export class SynthesisDatabase {
       CREATE INDEX IF NOT EXISTS idx_pd_events_type ON progressive_disclosure_events(event_type);
       CREATE INDEX IF NOT EXISTS idx_pd_events_session ON progressive_disclosure_events(session_id);
       CREATE INDEX IF NOT EXISTS idx_pd_events_created ON progressive_disclosure_events(created_at DESC);
+    `);
+
+    // Time-based summaries table for hourly/daily roll-ups
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS time_summaries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period_type TEXT NOT NULL CHECK(period_type IN ('hourly', 'daily')),
+        period_start INTEGER NOT NULL,
+        period_end INTEGER NOT NULL,
+        synthesis_node_id TEXT,
+        source_node_ids TEXT NOT NULL,
+        source_node_count INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+        error TEXT,
+        created_at INTEGER NOT NULL,
+        completed_at INTEGER,
+        FOREIGN KEY (synthesis_node_id) REFERENCES synthesis_nodes(id) ON DELETE SET NULL,
+        UNIQUE(period_type, period_start)
+      )
+    `);
+
+    this.db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_time_summaries_status ON time_summaries(status, created_at);
+      CREATE INDEX IF NOT EXISTS idx_time_summaries_period ON time_summaries(period_type, period_start DESC);
     `);
   }
 
@@ -772,6 +799,160 @@ export class SynthesisDatabase {
       totalInjectionTokens: stats.total_injection_tokens || 0,
       totalExpansionTokens: stats.total_expansion_tokens || 0
     };
+  }
+
+  // ============ Time Summary Operations ============
+
+  /**
+   * Get all nodes within a time range (for creating time summaries)
+   */
+  getNodesInTimeRange(startTime: number, endTime: number): SynthesisNode[] {
+    return this.db.prepare(`
+      SELECT * FROM synthesis_nodes
+      WHERE created_at >= ? AND created_at < ?
+      ORDER BY created_at ASC
+    `).all(startTime, endTime) as SynthesisNode[];
+  }
+
+  /**
+   * Create a new time summary record
+   */
+  createTimeSummary(summary: Omit<TimeSummary, 'id' | 'completed_at'>): TimeSummary {
+    const stmt = this.db.prepare(`
+      INSERT INTO time_summaries (
+        period_type, period_start, period_end, synthesis_node_id,
+        source_node_ids, source_node_count, status, error, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = this.withRetry(() => stmt.run(
+      summary.period_type,
+      summary.period_start,
+      summary.period_end,
+      summary.synthesis_node_id,
+      summary.source_node_ids,
+      summary.source_node_count,
+      summary.status,
+      summary.error,
+      summary.created_at
+    ));
+
+    return {
+      id: result.lastInsertRowid as number,
+      ...summary,
+      completed_at: null
+    };
+  }
+
+  /**
+   * Get a time summary by ID
+   */
+  getTimeSummary(id: number): TimeSummary | undefined {
+    return this.db.prepare('SELECT * FROM time_summaries WHERE id = ?').get(id) as TimeSummary | undefined;
+  }
+
+  /**
+   * Update time summary status
+   */
+  updateTimeSummaryStatus(
+    id: number,
+    status: TimeSummaryStatus,
+    synthesisNodeId?: string | null,
+    error?: string | null
+  ): void {
+    const now = Date.now();
+    const updates: string[] = ['status = ?'];
+    const values: (string | number | null)[] = [status];
+
+    if (status === 'completed' || status === 'failed') {
+      updates.push('completed_at = ?');
+      values.push(now);
+    }
+
+    if (synthesisNodeId !== undefined) {
+      updates.push('synthesis_node_id = ?');
+      values.push(synthesisNodeId);
+    }
+
+    if (error !== undefined) {
+      updates.push('error = ?');
+      values.push(error);
+    }
+
+    values.push(id);
+
+    const stmt = this.db.prepare(`
+      UPDATE time_summaries
+      SET ${updates.join(', ')}
+      WHERE id = ?
+    `);
+    this.withRetry(() => stmt.run(...values));
+  }
+
+  /**
+   * Get pending time summaries
+   */
+  getPendingTimeSummaries(limit: number = 10): TimeSummary[] {
+    return this.db.prepare(`
+      SELECT * FROM time_summaries
+      WHERE status = 'pending'
+      ORDER BY created_at ASC
+      LIMIT ?
+    `).all(limit) as TimeSummary[];
+  }
+
+  /**
+   * Get the last completed summary for a period type
+   */
+  getLastCompletedSummary(periodType: TimeSummaryPeriod): TimeSummary | undefined {
+    return this.db.prepare(`
+      SELECT * FROM time_summaries
+      WHERE period_type = ? AND status = 'completed'
+      ORDER BY period_start DESC
+      LIMIT 1
+    `).get(periodType) as TimeSummary | undefined;
+  }
+
+  /**
+   * Get time summaries with filters
+   */
+  getTimeSummaries(filters: {
+    periodType?: TimeSummaryPeriod;
+    status?: TimeSummaryStatus;
+    limit?: number;
+  }): TimeSummary[] {
+    const { periodType, status, limit = 50 } = filters;
+
+    let query = 'SELECT * FROM time_summaries WHERE 1=1';
+    const params: (string | number | null)[] = [];
+
+    if (periodType) {
+      query += ' AND period_type = ?';
+      params.push(periodType);
+    }
+
+    if (status) {
+      query += ' AND status = ?';
+      params.push(status);
+    }
+
+    query += ' ORDER BY period_start DESC LIMIT ?';
+    params.push(limit);
+
+    return this.db.prepare(query).all(...params) as TimeSummary[];
+  }
+
+  /**
+   * Check if a time summary already exists for a period
+   */
+  timeSummaryExists(periodType: TimeSummaryPeriod, periodStart: number): boolean {
+    const result = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM time_summaries
+      WHERE period_type = ? AND period_start = ?
+    `).get(periodType, periodStart) as { count: number };
+
+    return result.count > 0;
   }
 
   // ============ Utility ============
