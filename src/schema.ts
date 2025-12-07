@@ -44,6 +44,8 @@ export interface SearchResult {
   score: number;
   node_type: NodeType;
   created_at: number;
+  last_updated: number;
+  edge_count: number;
 }
 
 // ============ NEW TYPES FOR FEATURE PARITY ============

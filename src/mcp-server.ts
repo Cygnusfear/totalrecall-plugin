@@ -79,7 +79,12 @@ PROACTIVELY call this tool when you:
     name: 'synthesis_search',
     description: `Search synthesis nodes by semantic similarity. Use when you need to find related context based on meaning.
 
-Returns expandable references sorted by relevance score. Use synthesis_unfold to get full details.`,
+Returns expandable references sorted by relevance score. Use synthesis_unfold to get full details.
+
+Supports hybrid ranking that combines vector similarity with:
+- Recency: More recent nodes rank higher (exponential decay with 1-week half-life)
+- Node type: Decisions and learnings ranked higher than events
+- Relationships: Well-connected nodes rank higher`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -107,6 +112,24 @@ Returns expandable references sorted by relevance score. Use synthesis_unfold to
         before: {
           type: 'string',
           description: 'Only nodes before this date (YYYY-MM-DD)',
+        },
+        boost_recent: {
+          type: 'boolean',
+          description: 'Boost more recent nodes in ranking (default: true)',
+        },
+        boost_connected: {
+          type: 'boolean',
+          description: 'Boost nodes with more relationships (default: true)',
+        },
+        weights: {
+          type: 'object',
+          description: 'Custom weights for hybrid ranking (must sum to 1.0)',
+          properties: {
+            vector: { type: 'number', description: 'Weight for vector similarity (default: 0.6)' },
+            recency: { type: 'number', description: 'Weight for recency (default: 0.2)' },
+            node_type: { type: 'number', description: 'Weight for node type importance (default: 0.1)' },
+            relationships: { type: 'number', description: 'Weight for relationship count (default: 0.1)' },
+          },
         },
       },
       required: ['query'],
@@ -445,18 +468,76 @@ interface SynthesisSearchArgs {
   node_types?: NodeType[];
   after?: string;
   before?: string;
+  boost_recent?: boolean;
+  boost_connected?: boolean;
+  weights?: {
+    vector?: number;
+    recency?: number;
+    node_type?: number;
+    relationships?: number;
+  };
+}
+
+// Default weights for hybrid ranking
+const DEFAULT_WEIGHTS = {
+  vector: 0.6,
+  recency: 0.2,
+  node_type: 0.1,
+  relationships: 0.1,
+};
+
+// Node type importance weights (higher = more important)
+const NODE_TYPE_WEIGHTS: Record<NodeType, number> = {
+  decision: 1.0,
+  learning: 0.9,
+  task: 0.7,
+  summary: 0.6,
+  event: 0.5,
+  entity: 0.4,
+};
+
+// Recency half-life in milliseconds (1 week)
+const RECENCY_HALF_LIFE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Calculate recency score using exponential decay
+ * Returns value between 0 and 1, with 1 being most recent
+ */
+function calculateRecencyScore(timestamp: number, now: number): number {
+  const age = now - timestamp;
+  return Math.pow(0.5, age / RECENCY_HALF_LIFE_MS);
+}
+
+/**
+ * Calculate relationship score using log-scale normalization
+ * Returns value between 0 and 1
+ */
+function calculateRelationshipScore(edgeCount: number, maxEdgeCount: number): number {
+  if (maxEdgeCount === 0) return 0;
+  // Use log scale to prevent highly connected nodes from dominating
+  return Math.log(1 + edgeCount) / Math.log(1 + maxEdgeCount);
 }
 
 async function handleSynthesisSearch(args: SynthesisSearchArgs) {
-  const { query, max_results = 5, min_score = 0.3, node_types, after, before } = args;
+  const {
+    query,
+    max_results = 5,
+    min_score = 0.3,
+    node_types,
+    after,
+    before,
+    boost_recent = true,
+    boost_connected = true,
+    weights: customWeights
+  } = args;
   const startTime = Date.now();
 
   try {
     // Generate query embedding
     const queryEmbedding = await generateEmbedding(query);
 
-    // Search using sqlite-vec (over-fetch to account for date filtering)
-    let results = db.searchByVector(queryEmbedding, max_results * 2, min_score, node_types);
+    // Search using sqlite-vec (over-fetch to account for date filtering and re-ranking)
+    let results = db.searchByVector(queryEmbedding, max_results * 3, min_score * 0.5, node_types);
 
     // Apply date filters
     if (after || before) {
@@ -466,6 +547,59 @@ async function handleSynthesisSearch(args: SynthesisSearchArgs) {
       results = results.filter((r) => {
         return r.created_at >= afterTs && r.created_at <= beforeTs;
       });
+    }
+
+    // Apply hybrid ranking if enabled
+    if (boost_recent || boost_connected) {
+      const now = Date.now();
+
+      // Calculate max edge count for normalization
+      const maxEdgeCount = Math.max(...results.map(r => r.edge_count), 1);
+
+      // Normalize weights
+      const rawWeights = {
+        vector: customWeights?.vector ?? DEFAULT_WEIGHTS.vector,
+        recency: boost_recent ? (customWeights?.recency ?? DEFAULT_WEIGHTS.recency) : 0,
+        node_type: customWeights?.node_type ?? DEFAULT_WEIGHTS.node_type,
+        relationships: boost_connected ? (customWeights?.relationships ?? DEFAULT_WEIGHTS.relationships) : 0,
+      };
+
+      // Normalize to sum to 1.0
+      const weightSum = rawWeights.vector + rawWeights.recency + rawWeights.node_type + rawWeights.relationships;
+      const weights = {
+        vector: rawWeights.vector / weightSum,
+        recency: rawWeights.recency / weightSum,
+        node_type: rawWeights.node_type / weightSum,
+        relationships: rawWeights.relationships / weightSum,
+      };
+
+      // Calculate hybrid scores
+      const scoredResults = results.map(r => {
+        const vectorScore = r.score;
+        const recencyScore = calculateRecencyScore(r.last_updated, now);
+        const nodeTypeScore = NODE_TYPE_WEIGHTS[r.node_type] ?? 0.5;
+        const relationshipScore = calculateRelationshipScore(r.edge_count, maxEdgeCount);
+
+        const hybridScore =
+          weights.vector * vectorScore +
+          weights.recency * recencyScore +
+          weights.node_type * nodeTypeScore +
+          weights.relationships * relationshipScore;
+
+        return {
+          ...r,
+          vector_score: vectorScore,
+          recency_score: recencyScore,
+          node_type_score: nodeTypeScore,
+          relationship_score: relationshipScore,
+          score: hybridScore
+        };
+      });
+
+      // Re-sort by hybrid score and filter by min_score
+      results = scoredResults
+        .filter(r => r.vector_score >= min_score) // Keep original vector similarity threshold
+        .sort((a, b) => b.score - a.score);
     }
 
     // Limit results
@@ -499,9 +633,11 @@ async function handleSynthesisSearch(args: SynthesisSearchArgs) {
         relevance_score: Math.round(r.score * 100) / 100,
         node_type: r.node_type,
         created_at: r.created_at,
+        edge_count: r.edge_count,
       })),
       search_latency_ms: searchLatencyMs,
       query,
+      ranking_mode: boost_recent || boost_connected ? 'hybrid' : 'vector_only',
       message:
         results.length > 0
           ? `Found ${results.length} relevant synthesis nodes`

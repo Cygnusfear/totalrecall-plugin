@@ -305,9 +305,18 @@ export class SynthesisDatabase {
         sn.one_liner,
         sn.node_type,
         sn.created_at,
-        vec.distance
+        sn.last_updated,
+        vec.distance,
+        COALESCE(edge_counts.edge_count, 0) as edge_count
       FROM vec_synthesis AS vec
       JOIN synthesis_nodes AS sn ON vec.id = sn.id
+      LEFT JOIN (
+        SELECT node_id, COUNT(*) as edge_count FROM (
+          SELECT from_node_id as node_id FROM synthesis_edges
+          UNION ALL
+          SELECT to_node_id as node_id FROM synthesis_edges
+        ) GROUP BY node_id
+      ) edge_counts ON sn.id = edge_counts.node_id
       WHERE vec.embedding MATCH ? AND k = ?
     `;
 
@@ -328,7 +337,9 @@ export class SynthesisDatabase {
       one_liner: string;
       node_type: NodeType;
       created_at: number;
+      last_updated: number;
       distance: number;
+      edge_count: number;
     }>;
 
     return results
@@ -337,7 +348,9 @@ export class SynthesisDatabase {
         one_liner: r.one_liner,
         score: 1 - (r.distance * r.distance) / 2,  // Convert L2 distance to cosine similarity for normalized vectors
         node_type: r.node_type,
-        created_at: r.created_at
+        created_at: r.created_at,
+        last_updated: r.last_updated,
+        edge_count: r.edge_count
       }))
       .filter(r => r.score >= minScore)
       .slice(0, limit);
