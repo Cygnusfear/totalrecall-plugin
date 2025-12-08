@@ -955,6 +955,89 @@ export class SynthesisDatabase {
     return result.count > 0;
   }
 
+  // ============ Exact Match Search (SQL LIKE) ============
+
+  /**
+   * Search synthesis nodes using SQL LIKE for exact term matching.
+   * Searches across one_liner, summary, full_synthesis, entity_name, and entity_aliases.
+   * Returns results ranked by where the match was found:
+   *   - one_liner matches rank highest (priority 1)
+   *   - summary matches rank second (priority 2)
+   *   - full_synthesis matches rank third (priority 3)
+   *   - entity_name/entity_aliases matches rank fourth (priority 4)
+   */
+  searchByExactMatch(
+    term: string,
+    limit: number = 10,
+    nodeTypes?: NodeType[]
+  ): Array<SearchResult & { match_field: string; match_priority: number }> {
+    // Escape % and _ for LIKE, then wrap with wildcards
+    const escapedTerm = term.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    const likePattern = `%${escapedTerm}%`;
+
+    // Build query with CASE expression to determine match field and priority
+    let query = `
+      SELECT
+        id as node_id,
+        one_liner,
+        node_type,
+        created_at,
+        CASE
+          WHEN one_liner LIKE ? ESCAPE '\\' THEN 'one_liner'
+          WHEN summary LIKE ? ESCAPE '\\' THEN 'summary'
+          WHEN full_synthesis LIKE ? ESCAPE '\\' THEN 'full_synthesis'
+          WHEN entity_name LIKE ? ESCAPE '\\' THEN 'entity_name'
+          WHEN entity_aliases LIKE ? ESCAPE '\\' THEN 'entity_aliases'
+          ELSE 'unknown'
+        END as match_field,
+        CASE
+          WHEN one_liner LIKE ? ESCAPE '\\' THEN 1
+          WHEN summary LIKE ? ESCAPE '\\' THEN 2
+          WHEN full_synthesis LIKE ? ESCAPE '\\' THEN 3
+          WHEN entity_name LIKE ? ESCAPE '\\' OR entity_aliases LIKE ? ESCAPE '\\' THEN 4
+          ELSE 5
+        END as match_priority
+      FROM synthesis_nodes
+      WHERE (
+        one_liner LIKE ? ESCAPE '\\'
+        OR summary LIKE ? ESCAPE '\\'
+        OR full_synthesis LIKE ? ESCAPE '\\'
+        OR entity_name LIKE ? ESCAPE '\\'
+        OR entity_aliases LIKE ? ESCAPE '\\'
+      )
+    `;
+
+    // 15 placeholders for LIKE patterns in CASE + WHERE
+    const params: (string | number)[] = Array(15).fill(likePattern);
+
+    if (nodeTypes?.length) {
+      query += ` AND node_type IN (${nodeTypes.map(() => '?').join(',')})`;
+      params.push(...nodeTypes);
+    }
+
+    query += ' ORDER BY match_priority ASC, last_updated DESC LIMIT ?';
+    params.push(limit);
+
+    const results = this.db.prepare(query).all(...params) as Array<{
+      node_id: string;
+      one_liner: string;
+      node_type: NodeType;
+      created_at: number;
+      match_field: string;
+      match_priority: number;
+    }>;
+
+    return results.map(r => ({
+      node_id: r.node_id,
+      one_liner: r.one_liner,
+      score: 1.0, // Exact matches are considered perfect matches
+      node_type: r.node_type,
+      created_at: r.created_at,
+      match_field: r.match_field,
+      match_priority: r.match_priority,
+    }));
+  }
+
   // ============ Utility ============
 
   close(): void {

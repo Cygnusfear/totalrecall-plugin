@@ -113,6 +113,43 @@ Returns expandable references sorted by relevance score. Use synthesis_unfold to
     },
   },
   {
+    name: 'synthesis_recall',
+    description: `Hybrid search combining exact-match (SQL LIKE) with vector search fallback.
+
+Use this tool when searching for specific terms, acronyms, or proper nouns that may not surface well in semantic search (e.g., "DEVFLOW", project names, specific identifiers).
+
+How it works:
+1. First performs exact text match using SQL LIKE across one_liner, summary, full_synthesis, entity_name, and entity_aliases
+2. Results are ranked by match location: one_liner > summary > full_synthesis > entity fields
+3. If fewer than 3 exact matches found, falls back to vector search
+4. Combined results are returned with match type indicated
+
+This is more reliable than synthesis_search for finding specific terms that you know exist in the memory.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        term: {
+          type: 'string',
+          description: 'The exact term to search for (case-insensitive)',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Maximum results to return (default: 10)',
+        },
+        node_types: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Filter by node types',
+        },
+        vector_fallback_threshold: {
+          type: 'number',
+          description: 'Number of exact matches below which vector search kicks in (default: 3)',
+        },
+      },
+      required: ['term'],
+    },
+  },
+  {
     name: 'synthesis_unfold',
     description: `Expand a synthesis node for more detail. Use progressive disclosure: summary (default) -> full -> raw.
 
@@ -352,6 +389,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         result = await handleSynthesisSearch(args as unknown as SynthesisSearchArgs);
         break;
 
+      case 'synthesis_recall':
+        result = await handleSynthesisRecall(args as unknown as SynthesisRecallArgs);
+        break;
+
       case 'synthesis_unfold':
         result = await handleSynthesisUnfold(args as unknown as SynthesisUnfoldArgs);
         break;
@@ -576,6 +617,133 @@ async function handleSynthesisSearch(args: SynthesisSearchArgs) {
       message: error instanceof Error ? error.message : 'Unknown error',
       results: [],
       search_latency_ms: Date.now() - startTime,
+    };
+  }
+}
+
+interface SynthesisRecallArgs {
+  term: string;
+  max_results?: number;
+  node_types?: NodeType[];
+  vector_fallback_threshold?: number;
+}
+
+async function handleSynthesisRecall(args: SynthesisRecallArgs) {
+  const { term, max_results = 10, node_types, vector_fallback_threshold = 3 } = args;
+  const startTime = Date.now();
+
+  try {
+    // Step 1: Perform exact match search using SQL LIKE
+    const exactMatches = db.searchByExactMatch(term, max_results, node_types);
+
+    const exactMatchResults = exactMatches.map((r) => ({
+      node_id: r.node_id,
+      one_liner: r.one_liner,
+      relevance_score: r.score,
+      node_type: r.node_type,
+      created_at: r.created_at,
+      match_type: 'exact' as const,
+      match_field: r.match_field,
+      match_priority: r.match_priority,
+    }));
+
+    // Step 2: If fewer than threshold exact matches, perform vector search fallback
+    let vectorResults: Array<{
+      node_id: string;
+      one_liner: string;
+      relevance_score: number;
+      node_type: NodeType;
+      created_at: number;
+      match_type: 'vector';
+      match_field: null;
+      match_priority: number;
+    }> = [];
+
+    if (exactMatchResults.length < vector_fallback_threshold) {
+      try {
+        const queryEmbedding = await generateEmbedding(term);
+        const vectorMatches = db.searchByVector(
+          queryEmbedding,
+          max_results - exactMatchResults.length,
+          0.3,
+          node_types
+        );
+
+        // Filter out nodes already found in exact match
+        const exactNodeIds = new Set(exactMatchResults.map((r) => r.node_id));
+        vectorResults = vectorMatches
+          .filter((r) => !exactNodeIds.has(r.node_id))
+          .map((r) => ({
+            node_id: r.node_id,
+            one_liner: r.one_liner,
+            relevance_score: Math.round(r.score * 100) / 100,
+            node_type: r.node_type,
+            created_at: r.created_at,
+            match_type: 'vector' as const,
+            match_field: null,
+            match_priority: 10, // Vector results have lowest priority
+          }));
+      } catch (embeddingError) {
+        // Vector search failed, continue with exact matches only
+        console.error('Vector search fallback failed:', embeddingError);
+      }
+    }
+
+    // Combine results: exact matches first (sorted by priority), then vector results
+    const combinedResults = [
+      ...exactMatchResults.sort((a, b) => a.match_priority - b.match_priority),
+      ...vectorResults,
+    ].slice(0, max_results);
+
+    const searchLatencyMs = Date.now() - startTime;
+
+    // Log search event for analytics
+    try {
+      db.createProgressiveDisclosureEvent({
+        event_type: 'search',
+        session_id: null,
+        agent_id: null,
+        query_text: `[recall] ${term}`,
+        search_latency_ms: searchLatencyMs,
+        results_count: combinedResults.length,
+        node_ids: JSON.stringify(combinedResults.map((r) => r.node_id)),
+        injection_tokens: null,
+        expanded_node_id: null,
+        expansion_tokens: null,
+        message_tokens: null,
+      });
+    } catch {
+      // Silently fail on analytics
+    }
+
+    return {
+      results: combinedResults,
+      search_latency_ms: searchLatencyMs,
+      term,
+      stats: {
+        exact_matches: exactMatchResults.length,
+        vector_matches: vectorResults.length,
+        total: combinedResults.length,
+        vector_fallback_used: exactMatchResults.length < vector_fallback_threshold,
+      },
+      message:
+        combinedResults.length > 0
+          ? `Found ${combinedResults.length} results for "${term}" (${exactMatchResults.length} exact, ${vectorResults.length} vector)`
+          : `No results found for "${term}". Try a different term or use synthesis_search for semantic search.`,
+      next_step: 'Use synthesis_unfold(node_id) to expand any result that looks relevant.',
+    };
+  } catch (error) {
+    return {
+      error: 'Recall search failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      results: [],
+      search_latency_ms: Date.now() - startTime,
+      stats: {
+        exact_matches: 0,
+        vector_matches: 0,
+        total: 0,
+        vector_fallback_used: false,
+      },
     };
   }
 }

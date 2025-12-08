@@ -566,6 +566,244 @@ async function testEdgeHelpers() {
   console.log('Edge helper tests: PASS\n');
 }
 
+async function testExactMatchSearch() {
+  console.log('Test: Exact match search (SQL LIKE)...');
+  await cleanup();
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+
+  // Create test nodes with specific terms
+  const node1 = db.createNode({
+    node_type: 'learning',
+    one_liner: 'DEVFLOW is a Docker-agent-driven workflow',
+    summary: 'A development workflow using containerized agents',
+    full_synthesis: 'Full details about the DEVFLOW methodology',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const node2 = db.createNode({
+    node_type: 'decision',
+    one_liner: 'Use React for frontend development',
+    summary: 'Decided on React as the UI framework with DEVFLOW integration',
+    full_synthesis: 'Full rationale for choosing React',
+    entity_name: 'React Project',
+    entity_aliases: JSON.stringify(['react-app', 'frontend']),
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const node3 = db.createNode({
+    node_type: 'entity',
+    one_liner: 'Total Recall memory system',
+    summary: 'A synthesis-based memory for AI agents',
+    full_synthesis: 'Full description of the Total Recall system',
+    entity_name: 'DEVFLOW',
+    entity_aliases: JSON.stringify(['devflow-system', 'workflow']),
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  // Test 1: Search for term in one_liner (highest priority)
+  const devflowResults = db.searchByExactMatch('DEVFLOW', 10);
+  if (devflowResults.length !== 3) {
+    throw new Error(`Expected 3 results for DEVFLOW, got ${devflowResults.length}`);
+  }
+  console.log('  - Found all DEVFLOW occurrences: PASS');
+
+  // Verify priority ordering: one_liner match should come first
+  const firstResult = devflowResults[0];
+  if (firstResult.match_priority !== 1 || firstResult.match_field !== 'one_liner') {
+    throw new Error(`Expected first result to match on one_liner with priority 1, got ${firstResult.match_field} with priority ${firstResult.match_priority}`);
+  }
+  console.log('  - Priority ordering (one_liner first): PASS');
+
+  // Test 2: Search for term only in summary
+  const integrationResults = db.searchByExactMatch('integration', 10);
+  if (integrationResults.length !== 1) {
+    throw new Error(`Expected 1 result for 'integration', got ${integrationResults.length}`);
+  }
+  if (integrationResults[0].match_field !== 'summary') {
+    throw new Error(`Expected match on summary, got ${integrationResults[0].match_field}`);
+  }
+  console.log('  - Match in summary field: PASS');
+
+  // Test 3: Search for term in entity_name
+  const entityResults = db.searchByExactMatch('React Project', 10);
+  if (entityResults.length !== 1) {
+    throw new Error(`Expected 1 result for 'React Project', got ${entityResults.length}`);
+  }
+  if (entityResults[0].match_field !== 'entity_name') {
+    throw new Error(`Expected match on entity_name, got ${entityResults[0].match_field}`);
+  }
+  console.log('  - Match in entity_name: PASS');
+
+  // Test 4: Search for term in entity_aliases
+  const aliasResults = db.searchByExactMatch('react-app', 10);
+  if (aliasResults.length !== 1) {
+    throw new Error(`Expected 1 result for 'react-app', got ${aliasResults.length}`);
+  }
+  if (aliasResults[0].match_field !== 'entity_aliases') {
+    throw new Error(`Expected match on entity_aliases, got ${aliasResults[0].match_field}`);
+  }
+  console.log('  - Match in entity_aliases: PASS');
+
+  // Test 5: Case insensitivity (SQL LIKE is case-insensitive by default)
+  const caseResults = db.searchByExactMatch('devflow', 10);
+  if (caseResults.length !== 3) {
+    throw new Error(`Expected 3 results for lowercase 'devflow', got ${caseResults.length}`);
+  }
+  console.log('  - Case-insensitive search: PASS');
+
+  // Test 6: No results for non-existent term
+  const noResults = db.searchByExactMatch('NonExistentTerm12345', 10);
+  if (noResults.length !== 0) {
+    throw new Error(`Expected 0 results for non-existent term, got ${noResults.length}`);
+  }
+  console.log('  - No false positives: PASS');
+
+  // Test 7: Filter by node type
+  const learningOnly = db.searchByExactMatch('DEVFLOW', 10, ['learning']);
+  if (learningOnly.length !== 1) {
+    throw new Error(`Expected 1 learning node for DEVFLOW, got ${learningOnly.length}`);
+  }
+  if (learningOnly[0].node_type !== 'learning') {
+    throw new Error(`Expected learning type, got ${learningOnly[0].node_type}`);
+  }
+  console.log('  - Node type filtering: PASS');
+
+  // Test 8: Special characters in search term (% and _ should be escaped)
+  const node4 = db.createNode({
+    node_type: 'learning',
+    one_liner: '50% progress on feature_flag implementation',
+    summary: 'Halfway done with the feature flags',
+    full_synthesis: 'Details about progress',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const percentResults = db.searchByExactMatch('50%', 10);
+  if (percentResults.length !== 1) {
+    throw new Error(`Expected 1 result for '50%', got ${percentResults.length}`);
+  }
+  console.log('  - Special character escaping (%): PASS');
+
+  const underscoreResults = db.searchByExactMatch('feature_flag', 10);
+  if (underscoreResults.length !== 1) {
+    throw new Error(`Expected 1 result for 'feature_flag', got ${underscoreResults.length}`);
+  }
+  console.log('  - Special character escaping (_): PASS');
+
+  db.close();
+  console.log('Exact match search tests: PASS\n');
+}
+
+async function testHybridRecallSearch() {
+  console.log('Test: Hybrid recall search (exact + vector fallback)...');
+  await cleanup();
+  const db = new SynthesisDatabase(TEST_DB_PATH);
+  await initEmbeddings();
+
+  // Create a node that can be found by exact match
+  const exactMatchNode = db.createNode({
+    node_type: 'learning',
+    one_liner: 'SPECIALTERM123 is a unique identifier',
+    summary: 'Learning about unique identifiers',
+    full_synthesis: 'Full details',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+  const exactEmb = await generateSynthesisEmbedding(exactMatchNode.one_liner, exactMatchNode.summary, exactMatchNode.node_type);
+  db.insertEmbedding(exactMatchNode.id, exactEmb);
+
+  // Create nodes that can only be found by vector search
+  const vectorNode1 = db.createNode({
+    node_type: 'decision',
+    one_liner: 'Decided to use TypeScript for the project',
+    summary: 'TypeScript provides better type safety and developer experience',
+    full_synthesis: 'Full rationale',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+  const vectorEmb1 = await generateSynthesisEmbedding(vectorNode1.one_liner, vectorNode1.summary, vectorNode1.node_type);
+  db.insertEmbedding(vectorNode1.id, vectorEmb1);
+
+  // Test 1: Exact match only (when term exists)
+  const exactResults = db.searchByExactMatch('SPECIALTERM123', 10);
+  if (exactResults.length !== 1) {
+    throw new Error(`Expected 1 exact match, got ${exactResults.length}`);
+  }
+  console.log('  - Exact match found: PASS');
+
+  // Test 2: Vector search for general terms
+  const queryEmb = await generateEmbedding('TypeScript type safety');
+  const vectorResults = db.searchByVector(queryEmb, 5, 0.3);
+  if (vectorResults.length === 0) {
+    throw new Error('Expected vector search to find results');
+  }
+  console.log('  - Vector fallback works: PASS');
+
+  // Test 3: Verify hybrid behavior - exact matches should be preferred
+  // Search for something that has no exact match but might have vector similarity
+  const noExactResults = db.searchByExactMatch('UniqueFakeTermXYZ', 10);
+  if (noExactResults.length !== 0) {
+    throw new Error(`Expected 0 exact matches for fake term, got ${noExactResults.length}`);
+  }
+  console.log('  - No false exact matches: PASS');
+
+  db.close();
+  console.log('Hybrid recall search tests: PASS\n');
+}
+
 async function testRelationshipBuilder() {
   console.log('Test: Relationship builder...');
   await cleanup();
@@ -713,6 +951,8 @@ async function main() {
     await testQueueOperations();
     await testProgressiveDisclosureAnalytics();
     await testEdgeHelpers();
+    await testExactMatchSearch();
+    await testHybridRecallSearch();
     await testRelationshipBuilder();
 
     console.log('=== ALL TESTS PASSED ===');
