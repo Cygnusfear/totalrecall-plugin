@@ -145,6 +145,10 @@ This is more reliable than synthesis_search for finding specific terms that you 
           type: 'number',
           description: 'Number of exact matches below which vector search kicks in (default: 3)',
         },
+        vector_min_score: {
+          type: 'number',
+          description: 'Minimum relevance score for vector search fallback (0-1, default: 0.3)',
+        },
       },
       required: ['term'],
     },
@@ -626,10 +630,11 @@ interface SynthesisRecallArgs {
   max_results?: number;
   node_types?: NodeType[];
   vector_fallback_threshold?: number;
+  vector_min_score?: number;
 }
 
 async function handleSynthesisRecall(args: SynthesisRecallArgs) {
-  const { term, max_results = 10, node_types, vector_fallback_threshold = 3 } = args;
+  const { term, max_results = 10, node_types, vector_fallback_threshold = 3, vector_min_score = 0.3 } = args;
   const startTime = Date.now();
 
   try {
@@ -665,12 +670,14 @@ async function handleSynthesisRecall(args: SynthesisRecallArgs) {
         const vectorMatches = db.searchByVector(
           queryEmbedding,
           max_results - exactMatchResults.length,
-          0.3,
+          vector_min_score,
           node_types
         );
 
         // Filter out nodes already found in exact match
         const exactNodeIds = new Set(exactMatchResults.map((r) => r.node_id));
+        // Vector match priority is set to 10 (lowest) since exact matches should always rank higher
+        const VECTOR_MATCH_PRIORITY = 10;
         vectorResults = vectorMatches
           .filter((r) => !exactNodeIds.has(r.node_id))
           .map((r) => ({
@@ -681,7 +688,7 @@ async function handleSynthesisRecall(args: SynthesisRecallArgs) {
             created_at: r.created_at,
             match_type: 'vector' as const,
             match_field: null,
-            match_priority: 10, // Vector results have lowest priority
+            match_priority: VECTOR_MATCH_PRIORITY,
           }));
       } catch (embeddingError) {
         // Vector search failed, continue with exact matches only

@@ -965,14 +965,27 @@ export class SynthesisDatabase {
    *   - summary matches rank second (priority 2)
    *   - full_synthesis matches rank third (priority 3)
    *   - entity_name/entity_aliases matches rank fourth (priority 4)
+   *
+   * @param term - Search term (max 500 chars, empty/whitespace returns [])
+   * @param limit - Maximum results to return (default: 10)
+   * @param nodeTypes - Optional filter by node types
    */
   searchByExactMatch(
     term: string,
     limit: number = 10,
     nodeTypes?: NodeType[]
   ): Array<SearchResult & { match_field: string; match_priority: number }> {
+    // Validate empty term - return empty results for empty/whitespace-only terms
+    if (!term || term.trim().length === 0) {
+      return [];
+    }
+
+    // Truncate very long search terms to prevent performance issues
+    const MAX_TERM_LENGTH = 500;
+    const truncatedTerm = term.length > MAX_TERM_LENGTH ? term.substring(0, MAX_TERM_LENGTH) : term;
+
     // Escape % and _ for LIKE, then wrap with wildcards
-    const escapedTerm = term.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    const escapedTerm = truncatedTerm.replace(/%/g, '\\%').replace(/_/g, '\\_');
     const likePattern = `%${escapedTerm}%`;
 
     // Build query with CASE expression to determine match field and priority
@@ -1007,8 +1020,9 @@ export class SynthesisDatabase {
       )
     `;
 
-    // 15 placeholders for LIKE patterns in CASE + WHERE
-    const params: (string | number)[] = Array(15).fill(likePattern);
+    // Number of LIKE pattern placeholders: 5 (match_field CASE) + 5 (match_priority CASE) + 5 (WHERE clause)
+    const LIKE_PARAM_COUNT = 15;
+    const params: (string | number)[] = Array(LIKE_PARAM_COUNT).fill(likePattern);
 
     if (nodeTypes?.length) {
       query += ` AND node_type IN (${nodeTypes.map(() => '?').join(',')})`;
