@@ -63,6 +63,10 @@ async function main() {
         await runCommand(join(srcDir, 'cli', 'session-graft.ts'), args);
         break;
 
+      case 'prompt-enrich':
+        await runCommand(join(srcDir, 'cli', 'prompt-enrich.ts'), args);
+        break;
+
       case 'session-complete':
         await runCommand(join(srcDir, 'cli', 'session-complete.ts'), args);
         break;
@@ -115,6 +119,7 @@ Usage: totalrecall <command> [options]
 
 Hook Commands (called automatically):
   session-graft       Graft session to synthesis graph
+  prompt-enrich       Inject relevant memories per user prompt
   session-complete    Complete session with summary
   queue-synthesis     Queue current session for background synthesis
   backfill            Backfill unprocessed conversations
@@ -138,8 +143,9 @@ Maintenance Commands:
                       --dry-run       Preview without changes
 
 Environment:
-  ANTHROPIC_API_KEY   Required for background synthesis
-  TRANSCRIPT_PATH     Set by Claude Code hooks
+  ANTHROPIC_API_KEY     Required for background synthesis
+  TRANSCRIPT_PATH       Set by Claude Code hooks
+  TOTALRECALL_ENRICH    Set to 'false' to disable per-prompt enrichment
 `);
         break;
 
