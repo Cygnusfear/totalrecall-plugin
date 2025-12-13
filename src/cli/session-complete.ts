@@ -5,15 +5,15 @@
 
 import { getDatabase } from '../db.js';
 import { generateSynthesisEmbedding, initEmbeddings } from '../embeddings.js';
+import { readHookInput } from './hook-utils.js';
 
 async function main() {
   const db = getDatabase();
   await initEmbeddings();
 
-  const transcriptPath = process.env.TRANSCRIPT_PATH;
-  const sessionId = transcriptPath
-    ? transcriptPath.split('/').pop()?.replace('.jsonl', '') || `session-${Date.now()}`
-    : `session-${Date.now()}`;
+  // Read hook input from stdin (Claude Code delivers data this way)
+  const input = await readHookInput();
+  const sessionId = input?.session_id || `session-${Date.now()}`;
 
   const now = Date.now();
 

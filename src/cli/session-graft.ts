@@ -10,18 +10,17 @@ import { spawn } from 'child_process';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { getDatabase } from '../db.js';
+import { readHookInput } from './hook-utils.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const cliPath = join(__dirname, '..', '..', 'cli', 'totalrecall.js');
 
-function main() {
+async function main() {
   const db = getDatabase();
 
-  // Get session info from environment (set by Claude Code hooks)
-  const transcriptPath = process.env.TRANSCRIPT_PATH;
-  const sessionId = transcriptPath
-    ? transcriptPath.split('/').pop()?.replace('.jsonl', '') || `session-${Date.now()}`
-    : `session-${Date.now()}`;
+  // Read hook input from stdin (Claude Code delivers data this way)
+  const input = await readHookInput();
+  const sessionId = input?.session_id || `session-${Date.now()}`;
 
   // FAST: Query recent syntheses for context injection
   const recent = db.queryNodes({ limit: 5, order_by: 'last_updated' });
@@ -58,4 +57,7 @@ Use synthesis_search(query) to find specific context.
   }).unref();
 }
 
-main();
+main().catch((e) => {
+  console.error('[session-graft] Error:', e);
+  process.exit(1);
+});

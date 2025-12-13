@@ -6,6 +6,7 @@
 import { getDatabase } from '../db.js';
 import { randomUUID } from 'crypto';
 import { readFileSync, existsSync } from 'fs';
+import { readHookInput } from './hook-utils.js';
 
 interface JsonlEntry {
   type: string;
@@ -42,14 +43,22 @@ function extractText(content: string | Array<{ type: string; text?: string }>): 
 async function main() {
   const db = getDatabase();
 
-  const transcriptPath = process.env.TRANSCRIPT_PATH;
-  if (!transcriptPath || !existsSync(transcriptPath)) {
-    console.log('No transcript available');
+  // Read hook input from stdin (Claude Code delivers data this way)
+  const input = await readHookInput();
+  if (!input || !input.transcript_path) {
+    console.log('No hook input or transcript_path');
     db.close();
     return;
   }
 
-  const sessionId = transcriptPath.split('/').pop()?.replace('.jsonl', '') || `session-${Date.now()}`;
+  const transcriptPath = input.transcript_path;
+  if (!existsSync(transcriptPath)) {
+    console.log('Transcript file does not exist:', transcriptPath);
+    db.close();
+    return;
+  }
+
+  const sessionId = input.session_id || transcriptPath.split('/').pop()?.replace('.jsonl', '') || `session-${Date.now()}`;
 
   // Read and parse transcript
   const content = readFileSync(transcriptPath, 'utf-8');
