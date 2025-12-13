@@ -9,7 +9,7 @@
     {
       "name": "totalrecall",
       "description": "Enforced synthesis-first memory system. Captures decisions, learnings, and context across sessions with progressive disclosure.",
-      "version": "1.0.0",
+      "version": "2.0.0",
       "source": "./",
       "author": {
         "name": "ramram",
