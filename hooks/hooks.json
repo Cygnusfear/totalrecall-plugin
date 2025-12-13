@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/cli/totalrecall.js prompt-enrich",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }
