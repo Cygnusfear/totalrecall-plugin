@@ -1,0 +1,44 @@
+{
+  "name": "totalrecall-plugin",
+  "version": "2.0.0",
+  "description": "Total Recall - Standalone synthesis-first memory for Claude Code",
+  "type": "module",
+  "main": "dist/mcp-server.js",
+  "bin": {
+    "totalrecall": "./cli/totalrecall.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc -w",
+    "start": "bun dist/mcp-server.js",
+    "test": "bun test/integration.ts"
+  },
+  "keywords": [
+    "claude",
+    "mcp",
+    "memory",
+    "synthesis",
+    "total-recall"
+  ],
+  "author": "ramram <alex@manada.dev>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cygnusfear/totalrecall-plugin"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@xenova/transformers": "^2.17.2",
+    "sqlite-vec": "^0.1.6",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  }
+}

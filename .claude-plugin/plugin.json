@@ -1,0 +1,24 @@
+{
+  "name": "totalrecall",
+  "version": "1.0.0",
+  "description": "Enforced synthesis-first memory system. Captures decisions, learnings, and context across sessions with progressive disclosure.",
+  "author": {
+    "name": "ramram",
+    "email": "alex@manada.dev"
+  },
+  "homepage": "https://github.com/Cygnusfear/totalrecall-plugin",
+  "repository": "https://github.com/Cygnusfear/totalrecall-plugin",
+  "license": "MIT",
+  "keywords": ["memory", "synthesis", "decisions", "total-recall", "progressive-disclosure"],
+  "agents": [
+    "./agents/memory-graft.md",
+    "./agents/memory-search.md"
+  ],
+  "mcpServers": {
+    "totalrecall": {
+      "command": "bun",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/cli/mcp-server-wrapper.js"]
+    }
+  },
+  "hooks": "./hooks/hooks.json"
+}
