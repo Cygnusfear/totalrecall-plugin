@@ -58,82 +58,106 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
       connectionTimeout: config.connectionTimeout,
     });
 
-    // Set VectorChord probes for this connection
+    // Initialize session settings for VectorChord
     // Note: We don't await here to avoid blocking constructor, but failures are logged
-    this.setVectorChordProbes(this.probes).catch((err) => {
-      console.error('[PostgresDB] CRITICAL: Failed to set VectorChord probes:', err);
-      console.error('[PostgresDB] Vector search may return suboptimal results. Ensure VectorChord extension is installed.');
+    this.initializeSession().catch((err) => {
+      console.error('[PostgresDB] CRITICAL: Failed to initialize session:', err);
+      console.error('[PostgresDB] BM25/Vector search may not work correctly.');
     });
   }
 
   /**
-   * Set VectorChord probes for vector search recall/speed tradeoff
+   * Initialize session settings for VectorChord suite
+   * Sets search_path to include catalog schemas and configures probes
    */
-  private async setVectorChordProbes(probes: number): Promise<void> {
-    await this.sql`SET vectorchord.probes = ${probes}`;
+  private async initializeSession(): Promise<void> {
+    // Set search_path to include catalog schemas for BM25 and tokenizer
+    await this.sql.unsafe(
+      `SET search_path TO public, bm25_catalog, tokenizer_catalog`
+    );
+
+    // Set VectorChord probes for vector search recall/speed tradeoff
+    const safeProbes = Math.max(1, Math.min(1000, Math.floor(this.probes)));
+    await this.sql.unsafe(`SET vectorchord.probes = ${safeProbes}`);
   }
 
   // ============ Node Operations ============
+
+  // Columns to select for synthesis_nodes (excludes 'bm25' which postgres.js can't parse)
+  private readonly nodeColumns = `
+    id, node_type, one_liner, summary, full_synthesis,
+    entity_name, entity_aliases, temporal_context, first_seen, last_updated,
+    status, assigned_agent, priority, source_session_id, source_agent_id,
+    source_repo, access_count, last_accessed, created_at, updated_at, embedding
+  `;
 
   async createNode(
     node: Omit<SynthesisNode, 'id' | 'created_at' | 'updated_at' | 'access_count' | 'last_accessed'>
   ): Promise<SynthesisNode> {
     const now = Date.now();
 
-    const [result] = await this.sql`
-      INSERT INTO synthesis_nodes (
+    // Note: Use unsafe() because postgres.js can't parse bm25_catalog.bm25vector type
+    // even when the column isn't returned - it introspects table schema for prepared statements
+    const results = await this.sql.unsafe(
+      `INSERT INTO synthesis_nodes (
         node_type, one_liner, summary, full_synthesis,
         entity_name, entity_aliases, temporal_context, first_seen, last_updated,
         status, assigned_agent, priority,
         source_session_id, source_agent_id, source_repo,
         access_count, last_accessed, created_at, updated_at
-      ) VALUES (
-        ${node.node_type}, ${node.one_liner}, ${node.summary}, ${node.full_synthesis},
-        ${node.entity_name}, ${node.entity_aliases}, ${node.temporal_context},
-        ${node.first_seen}, ${node.last_updated},
-        ${node.status}, ${node.assigned_agent}, ${node.priority},
-        ${node.source_session_id}, ${node.source_agent_id}, ${node.source_repo},
-        0, NULL, ${now}, ${now}
-      )
-      RETURNING *
-    `;
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 0, NULL, $16, $16)
+      RETURNING ${this.nodeColumns}`,
+      [
+        node.node_type, node.one_liner, node.summary, node.full_synthesis,
+        node.entity_name, node.entity_aliases, node.temporal_context,
+        node.first_seen, node.last_updated,
+        node.status, node.assigned_agent, node.priority,
+        node.source_session_id, node.source_agent_id, node.source_repo,
+        now,
+      ]
+    );
 
-    return this.mapNodeFromDb(result);
+    return this.mapNodeFromDb(results[0]);
   }
 
   async getNode(id: string): Promise<SynthesisNode | undefined> {
-    const [result] = await this.sql`
-      SELECT * FROM synthesis_nodes WHERE id = ${id}
-    `;
+    // Use unsafe() to avoid postgres.js type parsing issues with bm25 column
+    const results = await this.sql.unsafe(
+      `SELECT ${this.nodeColumns} FROM synthesis_nodes WHERE id = $1`,
+      [id]
+    );
 
-    return result ? this.mapNodeFromDb(result) : undefined;
+    return results.length > 0 ? this.mapNodeFromDb(results[0]) : undefined;
   }
 
   async queryNodes(filters: NodeQueryFilters): Promise<SynthesisNode[]> {
     const { node_types, session_id, limit = 100, order_by = 'last_updated' } = filters;
+    const orderColumn = order_by === 'created_at' ? 'created_at' : 'last_updated';
 
-    let query = this.sql`SELECT * FROM synthesis_nodes WHERE 1=1`;
-    const conditions: postgres.PendingQuery<postgres.Row[]>[] = [];
+    // Build dynamic WHERE clause
+    const conditions: string[] = ['1=1'];
+    const params: any[] = [];
 
     if (node_types?.length) {
-      conditions.push(this.sql`AND node_type = ANY(${node_types})`);
+      params.push(node_types);
+      conditions.push(`node_type = ANY($${params.length})`);
     }
     if (session_id) {
-      conditions.push(this.sql`AND source_session_id = ${session_id}`);
+      params.push(session_id);
+      conditions.push(`source_session_id = $${params.length}`);
     }
+    params.push(limit);
 
-    // Build full query
-    const orderColumn = order_by === 'created_at' ? 'created_at' : 'last_updated';
-    const results = await this.sql`
-      SELECT * FROM synthesis_nodes
-      WHERE 1=1
-      ${node_types?.length ? this.sql`AND node_type = ANY(${node_types})` : this.sql``}
-      ${session_id ? this.sql`AND source_session_id = ${session_id}` : this.sql``}
-      ORDER BY ${this.sql(orderColumn)} DESC
-      LIMIT ${limit}
-    `;
+    // Use unsafe() to avoid postgres.js type parsing issues with bm25 column
+    const results = await this.sql.unsafe(
+      `SELECT ${this.nodeColumns} FROM synthesis_nodes
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY ${orderColumn} DESC
+       LIMIT $${params.length}`,
+      params
+    );
 
-    return results.map((r) => this.mapNodeFromDb(r));
+    return results.map((r: any) => this.mapNodeFromDb(r));
   }
 
   async updateNodeAccess(nodeId: string): Promise<void> {
@@ -145,13 +169,15 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
   }
 
   async getNodesBySession(sessionId: string): Promise<SynthesisNode[]> {
-    const results = await this.sql`
-      SELECT * FROM synthesis_nodes
-      WHERE source_session_id = ${sessionId}
-      ORDER BY created_at ASC
-    `;
+    // Use unsafe() to avoid postgres.js type parsing issues with bm25 column
+    const results = await this.sql.unsafe(
+      `SELECT ${this.nodeColumns} FROM synthesis_nodes
+       WHERE source_session_id = $1
+       ORDER BY created_at ASC`,
+      [sessionId]
+    );
 
-    return results.map((r) => this.mapNodeFromDb(r));
+    return results.map((r: any) => this.mapNodeFromDb(r));
   }
 
   async getAllSessionIds(): Promise<string[]> {
@@ -297,25 +323,39 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
   }
 
   async searchByBM25(query: string, limit: number): Promise<SearchResult[]> {
-    const results = await this.sql`
-      SELECT
-        id as node_id,
-        one_liner,
-        node_type,
-        created_at,
-        bm25_score(bm25, ${query}) as score
-      FROM synthesis_nodes
-      WHERE bm25 IS NOT NULL
-      ORDER BY score DESC
-      LIMIT ${limit}
-    `;
+    // VectorChord-BM25 uses <&> operator with to_bm25query and tokenize
+    // BM25 scores are negative (more negative = more relevant)
+    // We normalize to [0, 1] where higher = more relevant
+    // Note: Must set search_path before query because <&> operator requires bm25_catalog types
+    // Use a transaction to ensure search_path persists for the query
+    const results = await this.sql.begin(async (sql) => {
+      await sql.unsafe(`SET search_path TO public, bm25_catalog, tokenizer_catalog`);
+      return sql.unsafe(
+        `SELECT
+          id as node_id,
+          one_liner,
+          node_type,
+          created_at,
+          bm25 <&> bm25_catalog.to_bm25query(
+            'idx_nodes_bm25'::regclass,
+            tokenizer_catalog.tokenize($1, 'totalrecall_tokenizer')::bm25vector
+          ) as bm25_score
+        FROM synthesis_nodes
+        WHERE bm25 IS NOT NULL
+        ORDER BY bm25_score ASC
+        LIMIT $2`,
+        [query, limit]
+      );
+    });
 
-    return results.map((r) => ({
+    // Normalize BM25 scores to [0, 1] range
+    // BM25 scores are negative, so we use exp(-score) to convert
+    return results.map((r: any) => ({
       node_id: r.node_id as string,
       one_liner: r.one_liner as string,
       node_type: r.node_type as NodeType,
       created_at: Number(r.created_at),
-      score: Number(r.score),
+      score: Math.min(1.0, Math.exp(Number(r.bm25_score) / 10)), // Normalize to [0, 1]
     }));
   }
 
@@ -381,18 +421,27 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
   }
 
   async getOrphanNodes(nodeTypes?: NodeType[]): Promise<SynthesisNode[]> {
-    const results = await this.sql`
-      SELECT * FROM synthesis_nodes
-      WHERE id NOT IN (
-        SELECT DISTINCT from_node_id FROM synthesis_edges
-        UNION
-        SELECT DISTINCT to_node_id FROM synthesis_edges
-      )
-      ${nodeTypes?.length ? this.sql`AND node_type = ANY(${nodeTypes})` : this.sql``}
-      ORDER BY created_at DESC
-    `;
+    // Use unsafe() to avoid postgres.js type parsing issues with bm25 column
+    const params: any[] = [];
+    let nodeTypeFilter = '';
+    if (nodeTypes?.length) {
+      params.push(nodeTypes);
+      nodeTypeFilter = `AND node_type = ANY($${params.length})`;
+    }
 
-    return results.map((r) => this.mapNodeFromDb(r));
+    const results = await this.sql.unsafe(
+      `SELECT ${this.nodeColumns} FROM synthesis_nodes
+       WHERE id NOT IN (
+         SELECT DISTINCT from_node_id FROM synthesis_edges
+         UNION
+         SELECT DISTINCT to_node_id FROM synthesis_edges
+       )
+       ${nodeTypeFilter}
+       ORDER BY created_at DESC`,
+      params
+    );
+
+    return results.map((r: any) => this.mapNodeFromDb(r));
   }
 
   async getEdgeCount(nodeId: string): Promise<number> {

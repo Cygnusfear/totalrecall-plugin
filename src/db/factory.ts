@@ -97,8 +97,27 @@ export function getDatabaseWithBackend(
 }
 
 /**
- * Check if a backend is available
+ * Convenience function: Create SQLite database
+ * SQLite initializes synchronously in constructor, but we keep async API for consistency
  */
+export async function createSQLiteDatabase(path: string): Promise<ISynthesisDatabase> {
+  return new SQLiteSynthesisDatabase(path);
+}
+
+/**
+ * Convenience function: Create PostgreSQL database
+ */
+export async function createPostgresDatabase(options: {
+  connectionString: string;
+  poolSize?: number;
+  vectorchordProbes?: number;
+  vectorDimension?: 384 | 768 | 1536;
+}): Promise<ISynthesisDatabase> {
+  const db = new PostgresSynthesisDatabase(options);
+  await db.init();
+  return db;
+}
+
 /**
  * Check if a backend is available
  * For postgres, this only checks if the package is installed, not if the server is reachable

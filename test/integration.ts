@@ -2,7 +2,7 @@
  * Integration tests for TotalRecall plugin
  */
 
-import { SynthesisDatabase } from '../src/db.js';
+import { createSQLiteDatabase, type ISynthesisDatabase } from '../src/db.js';
 import { generateEmbedding, initEmbeddings, generateSynthesisEmbedding } from '../src/embeddings.js';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -18,7 +18,7 @@ async function cleanup() {
 
 async function testDatabaseSchema() {
   console.log('Test: Database schema creation...');
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
 
   // Test node creation
   const node = await db.createNode({
@@ -119,7 +119,7 @@ async function testEmbeddings() {
 async function testVectorSearch() {
   console.log('Test: Vector search...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
   await initEmbeddings();
 
   // Create nodes with embeddings
@@ -186,7 +186,7 @@ async function testVectorSearch() {
 async function testQueueOperations() {
   console.log('Test: Queue operations...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
 
   // Create pending item
   const item = await db.createSynthesisQueueItem({
@@ -233,7 +233,7 @@ async function testQueueOperations() {
 async function testScoreCalculation() {
   console.log('Test: Score calculation (L2 to cosine conversion)...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
   await initEmbeddings();
 
   // Create a node with specific content
@@ -311,7 +311,7 @@ async function testScoreCalculation() {
 async function testEntityContextInEmbeddings() {
   console.log('Test: Entity context in embeddings (Issue #7 fix)...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
   await initEmbeddings();
 
   // Create a node about "Epic #183 backend migration" with entity_name "Jungle"
@@ -400,7 +400,7 @@ async function testEntityContextInEmbeddings() {
 async function testProgressiveDisclosureAnalytics() {
   console.log('Test: Progressive disclosure analytics...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
 
   const now = Date.now();
 
@@ -464,7 +464,7 @@ async function testProgressiveDisclosureAnalytics() {
 async function testEdgeHelpers() {
   console.log('Test: Edge helper methods...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
 
   // Create two nodes
   const node1 = await db.createNode({
@@ -569,7 +569,7 @@ async function testEdgeHelpers() {
 async function testRelationshipBuilder() {
   console.log('Test: Relationship builder...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
   await initEmbeddings();
 
   // Import dynamically to test

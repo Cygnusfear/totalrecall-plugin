@@ -30,4 +30,6 @@ export {
   resetDatabase,
   getDatabaseWithBackend,
   isBackendAvailable,
+  createSQLiteDatabase,
+  createPostgresDatabase,
 } from './factory.js';

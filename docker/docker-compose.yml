@@ -32,6 +32,7 @@ services:
     # Performance tuning for vector workloads
     command: >
       postgres
+      -c shared_preload_libraries=vchord.so,pg_tokenizer.so
       -c shared_buffers=256MB
       -c effective_cache_size=512MB
       -c maintenance_work_mem=128MB

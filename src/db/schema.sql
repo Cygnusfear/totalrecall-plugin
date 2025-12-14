@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS synthesis_nodes (
     embedding vector(384),
 
     -- BM25 vector for keyword search (populated by tokenizer)
-    bm25 bm25vector
+    bm25 bm25_catalog.bm25vector
 );
 
 -- Standard B-tree indexes for common lookups
@@ -65,8 +65,7 @@ CREATE INDEX IF NOT EXISTS idx_nodes_entity_name ON synthesis_nodes(entity_name)
 -- Using vchordrq (RaBitQ quantization) for memory efficiency
 -- probes controls recall/speed tradeoff (default 10, increase for higher recall)
 CREATE INDEX IF NOT EXISTS idx_nodes_embedding ON synthesis_nodes
-    USING vchordrq (embedding vector_l2_ops)
-    WITH (options = '[residual_quantization = true]');
+    USING vchordrq (embedding vector_l2_ops);
 
 -- Trigram indexes for code identifier fuzzy search
 CREATE INDEX IF NOT EXISTS idx_nodes_entity_name_trgm ON synthesis_nodes
@@ -102,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_edges_type ON synthesis_edges(edge_type);
 -- ============================================================================
 
 CREATE TABLE IF NOT EXISTS raw_content (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
     synthesis_node_id UUID REFERENCES synthesis_nodes(id) ON DELETE SET NULL,
     content_type TEXT NOT NULL CHECK (content_type IN ('message', 'tool_call', 'tool_result', 'conversation')),
@@ -170,19 +169,14 @@ CREATE INDEX IF NOT EXISTS idx_pd_events_created ON progressive_disclosure_event
 -- BM25 TOKENIZER CONFIGURATION
 -- ============================================================================
 
--- Create a code-optimized tokenizer for BM25
--- Keeps programming keywords, handles camelCase/snake_case, removes noise
-SELECT create_tokenizer('totalrecall_tokenizer', $$
-model = "bert_base_uncased"
-pre_tokenizer = "unicode_segmentation"
-[[character_filters]]
-to = "abcdefghijklmnopqrstuvwxyz_"
-$$);
+-- Create a tokenizer for BM25 using BERT wordpiece
+-- Uses bert_base_uncased model for good English text handling
+SELECT tokenizer_catalog.create_tokenizer('totalrecall_tokenizer', 'model = "bert_base_uncased"');
 
 -- Create BM25 index using the custom tokenizer
+-- Note: Index is created on the bm25 column, not a text expression
 CREATE INDEX IF NOT EXISTS idx_nodes_bm25 ON synthesis_nodes
-    USING bm25 ((one_liner || ' ' || summary || ' ' || full_synthesis) bm25_ops)
-    WITH (tokenizer = 'totalrecall_tokenizer');
+    USING bm25 (bm25 bm25_catalog.bm25_ops);
 
 -- ============================================================================
 -- HELPER FUNCTIONS
@@ -207,12 +201,20 @@ CREATE TRIGGER trg_node_updated
 -- Function to tokenize and set bm25vector on insert/update
 CREATE OR REPLACE FUNCTION update_node_bm25()
 RETURNS TRIGGER AS $$
+DECLARE
+    combined_text TEXT;
+    token_array INTEGER[];
 BEGIN
     -- Combine searchable text fields for BM25 indexing
-    NEW.bm25 = to_bm25vector('totalrecall_tokenizer',
-        COALESCE(NEW.one_liner, '') || ' ' ||
-        COALESCE(NEW.summary, '') || ' ' ||
-        COALESCE(NEW.full_synthesis, ''));
+    combined_text := COALESCE(NEW.one_liner, '') || ' ' ||
+                     COALESCE(NEW.summary, '') || ' ' ||
+                     COALESCE(NEW.full_synthesis, '');
+
+    -- Tokenize the combined text
+    token_array := tokenizer_catalog.tokenize(combined_text, 'totalrecall_tokenizer');
+
+    -- Cast to bm25vector
+    NEW.bm25 := token_array::bm25_catalog.bm25vector;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
@@ -264,16 +266,19 @@ vector_results AS (
     LIMIT max_results * 3
 ),
 -- BM25 search results with ranking
+-- Note: BM25 scores are negative (more negative = more relevant), so we order ASC
 bm25_results AS (
     SELECT
         id,
         one_liner,
         node_type,
-        bm25_score(bm25, query_text) AS bm25_raw,
-        ROW_NUMBER() OVER (ORDER BY bm25_score(bm25, query_text) DESC) AS rank
+        bm25 <&> bm25_catalog.to_bm25query('idx_nodes_bm25'::regclass,
+            tokenizer_catalog.tokenize(query_text, 'totalrecall_tokenizer')::bm25_catalog.bm25vector) AS bm25_raw,
+        ROW_NUMBER() OVER (ORDER BY bm25 <&> bm25_catalog.to_bm25query('idx_nodes_bm25'::regclass,
+            tokenizer_catalog.tokenize(query_text, 'totalrecall_tokenizer')::bm25_catalog.bm25vector) ASC) AS rank
     FROM synthesis_nodes
     WHERE bm25 IS NOT NULL
-    ORDER BY bm25_score(bm25, query_text) DESC
+    ORDER BY bm25_raw ASC
     LIMIT max_results * 3
 ),
 -- Trigram search results with ranking
