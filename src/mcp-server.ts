@@ -23,7 +23,7 @@ let synthesisWorker: SynthesisWorker | null = null;
 const server = new Server(
   {
     name: 'totalrecall',
-    version: '2.0.0',
+    version: '2.1.0',
   },
   {
     capabilities: {
