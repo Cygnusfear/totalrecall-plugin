@@ -100,3 +100,16 @@ export interface ProgressiveDisclosureEvent {
   message_tokens: number | null;
   created_at: number;
 }
+
+// ============ CORE MEMORY (Epic 4) ============
+
+export type CoreMemoryBlockType = 'persona' | 'human';
+
+export interface CoreMemoryBlock {
+  id: string;
+  block_type: CoreMemoryBlockType;
+  content: string;
+  token_estimate: number;
+  created_at: number;
+  updated_at: number;
+}

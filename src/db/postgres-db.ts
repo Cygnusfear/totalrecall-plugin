@@ -14,6 +14,8 @@ import type {
   SynthesisQueue,
   SynthesisQueueStatus,
   ProgressiveDisclosureEvent,
+  CoreMemoryBlock,
+  CoreMemoryBlockType,
 } from '../schema.js';
 import type {
   ISynthesisDatabase,
@@ -725,6 +727,77 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
       expansionRate,
       totalInjectionTokens: stats.total_injection_tokens || 0,
       totalExpansionTokens: stats.total_expansion_tokens || 0,
+    };
+  }
+
+  // ============ Core Memory Operations ============
+
+  private coreMemoryTableInitialized = false;
+
+  private async ensureCoreMemoryTable(): Promise<void> {
+    if (this.coreMemoryTableInitialized) return;
+    await this.sql`
+      CREATE TABLE IF NOT EXISTS core_memory (
+        id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+        block_type TEXT NOT NULL UNIQUE CHECK(block_type IN ('persona', 'human')),
+        content TEXT NOT NULL,
+        token_estimate INTEGER NOT NULL DEFAULT 0,
+        created_at BIGINT NOT NULL,
+        updated_at BIGINT NOT NULL
+      )
+    `;
+    this.coreMemoryTableInitialized = true;
+  }
+
+  async getCoreMemoryBlock(blockType: CoreMemoryBlockType): Promise<CoreMemoryBlock | null> {
+    await this.ensureCoreMemoryTable();
+    const rows = await this.sql`
+      SELECT * FROM core_memory WHERE block_type = ${blockType}
+    `;
+    return rows.length > 0 ? this.mapCoreMemoryFromDb(rows[0]) : null;
+  }
+
+  async getAllCoreMemoryBlocks(): Promise<CoreMemoryBlock[]> {
+    await this.ensureCoreMemoryTable();
+    const rows = await this.sql`SELECT * FROM core_memory`;
+    return rows.map((row) => this.mapCoreMemoryFromDb(row));
+  }
+
+  async setCoreMemoryBlock(
+    blockType: CoreMemoryBlockType,
+    content: string,
+    tokenEstimate: number
+  ): Promise<CoreMemoryBlock> {
+    await this.ensureCoreMemoryTable();
+    const now = Date.now();
+    const rows = await this.sql`
+      INSERT INTO core_memory (block_type, content, token_estimate, created_at, updated_at)
+      VALUES (${blockType}, ${content}, ${tokenEstimate}, ${now}, ${now})
+      ON CONFLICT (block_type) DO UPDATE SET
+        content = EXCLUDED.content,
+        token_estimate = EXCLUDED.token_estimate,
+        updated_at = EXCLUDED.updated_at
+      RETURNING *
+    `;
+    return this.mapCoreMemoryFromDb(rows[0]);
+  }
+
+  async deleteCoreMemoryBlock(blockType: CoreMemoryBlockType): Promise<boolean> {
+    await this.ensureCoreMemoryTable();
+    const result = await this.sql`
+      DELETE FROM core_memory WHERE block_type = ${blockType}
+    `;
+    return result.count > 0;
+  }
+
+  private mapCoreMemoryFromDb(row: postgres.Row): CoreMemoryBlock {
+    return {
+      id: row.id as string,
+      block_type: row.block_type as CoreMemoryBlockType,
+      content: row.content as string,
+      token_estimate: Number(row.token_estimate),
+      created_at: Number(row.created_at),
+      updated_at: Number(row.updated_at),
     };
   }
 

@@ -17,6 +17,8 @@ import type {
   SynthesisQueue,
   SynthesisQueueStatus,
   ProgressiveDisclosureEvent,
+  CoreMemoryBlock,
+  CoreMemoryBlockType,
 } from '../schema.js';
 import type {
   ISynthesisDatabase,
@@ -206,6 +208,18 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       CREATE INDEX IF NOT EXISTS idx_pd_events_type ON progressive_disclosure_events(event_type);
       CREATE INDEX IF NOT EXISTS idx_pd_events_session ON progressive_disclosure_events(session_id);
       CREATE INDEX IF NOT EXISTS idx_pd_events_created ON progressive_disclosure_events(created_at DESC);
+    `);
+
+    // Core memory for always-inject blocks (Epic 4)
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS core_memory (
+        id TEXT PRIMARY KEY,
+        block_type TEXT NOT NULL UNIQUE CHECK(block_type IN ('persona', 'human')),
+        content TEXT NOT NULL,
+        token_estimate INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
     `);
   }
 
@@ -822,6 +836,65 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       totalInjectionTokens: stats.total_injection_tokens || 0,
       totalExpansionTokens: stats.total_expansion_tokens || 0,
     };
+  }
+
+  // ============ Core Memory Operations ============
+
+  async getCoreMemoryBlock(blockType: CoreMemoryBlockType): Promise<CoreMemoryBlock | null> {
+    const row = this.db
+      .prepare('SELECT * FROM core_memory WHERE block_type = ?')
+      .get(blockType) as CoreMemoryBlock | undefined;
+    return row || null;
+  }
+
+  async getAllCoreMemoryBlocks(): Promise<CoreMemoryBlock[]> {
+    return this.db.prepare('SELECT * FROM core_memory').all() as CoreMemoryBlock[];
+  }
+
+  async setCoreMemoryBlock(
+    blockType: CoreMemoryBlockType,
+    content: string,
+    tokenEstimate: number
+  ): Promise<CoreMemoryBlock> {
+    const now = Date.now();
+    const existing = await this.getCoreMemoryBlock(blockType);
+
+    if (existing) {
+      this.db
+        .prepare(
+          `UPDATE core_memory SET content = ?, token_estimate = ?, updated_at = ? WHERE block_type = ?`
+        )
+        .run(content, tokenEstimate, now, blockType);
+
+      return {
+        ...existing,
+        content,
+        token_estimate: tokenEstimate,
+        updated_at: now,
+      };
+    }
+
+    const id = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO core_memory (id, block_type, content, token_estimate, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(id, blockType, content, tokenEstimate, now, now);
+
+    return {
+      id,
+      block_type: blockType,
+      content,
+      token_estimate: tokenEstimate,
+      created_at: now,
+      updated_at: now,
+    };
+  }
+
+  async deleteCoreMemoryBlock(blockType: CoreMemoryBlockType): Promise<boolean> {
+    const result = this.db.prepare('DELETE FROM core_memory WHERE block_type = ?').run(blockType);
+    return result.changes > 0;
   }
 
   // ============ Utility ============

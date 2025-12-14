@@ -15,6 +15,8 @@ import type {
   SynthesisQueueChunkType,
   ProgressiveDisclosureEvent,
   ProgressiveDisclosureEventType,
+  CoreMemoryBlock,
+  CoreMemoryBlockType,
 } from '../schema.js';
 
 /**
@@ -285,6 +287,32 @@ export interface ISynthesisDatabase {
     limit: number,
     threshold?: number
   ): Promise<SearchResult[]>;
+
+  // ============ Core Memory Operations (Epic 4) ============
+
+  /**
+   * Get a core memory block by type
+   */
+  getCoreMemoryBlock(blockType: CoreMemoryBlockType): Promise<CoreMemoryBlock | null>;
+
+  /**
+   * Get all core memory blocks
+   */
+  getAllCoreMemoryBlocks(): Promise<CoreMemoryBlock[]>;
+
+  /**
+   * Set (upsert) a core memory block
+   */
+  setCoreMemoryBlock(
+    blockType: CoreMemoryBlockType,
+    content: string,
+    tokenEstimate: number
+  ): Promise<CoreMemoryBlock>;
+
+  /**
+   * Delete a core memory block
+   */
+  deleteCoreMemoryBlock(blockType: CoreMemoryBlockType): Promise<boolean>;
 
   // ============ Utility ============
 

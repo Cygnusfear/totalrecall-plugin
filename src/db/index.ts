@@ -15,6 +15,9 @@ export type {
   HybridSearchResult,
 } from './interface.js';
 
+// Re-export Core Memory types from schema (needed by consumers)
+export type { CoreMemoryBlock, CoreMemoryBlockType } from '../schema.js';
+
 // Type guard for hybrid search support
 export { supportsHybridSearch } from './interface.js';
 

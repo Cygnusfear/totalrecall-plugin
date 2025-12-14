@@ -9,40 +9,61 @@
 
 import { getDatabase } from '../db.js';
 import { readHookInput } from './hook-utils.js';
+import { createCoreMemoryService } from '../lib/core-memory.js';
+import { createContextFormatter, type FormattedMemory } from '../lib/context-formatter.js';
 
 async function main() {
   const db = getDatabase();
 
-  // Read hook input from stdin (Claude Code delivers data this way)
-  const input = await readHookInput();
-  const sessionId = input?.session_id || `session-${Date.now()}`;
+  try {
+    // Read hook input from stdin (Claude Code delivers data this way)
+    const input = await readHookInput();
 
-  // FAST: Query recent syntheses for context injection
-  const recent = await db.queryNodes({ limit: 5, order_by: 'last_updated' });
+    // FAST: Query recent syntheses for context injection
+    const recent = await db.queryNodes({ limit: 5, order_by: 'last_updated' });
 
-  // Format for hook output
-  const contextMsg =
-    recent.length > 0
-      ? recent.map((n) => `- [${n.node_type}] ${n.one_liner}`).join('\n')
-      : 'No recent synthesis nodes found.';
+    // Get core memory blocks (persona, human)
+    const coreMemoryService = createCoreMemoryService(db);
+    const coreMemory = await coreMemoryService.getBlocks();
 
-  // Output hook response immediately
-  console.log(
-    JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'SessionStart',
-        additionalContext: `<total_recall_context>
-Recent memories:
-${contextMsg}
+    // Format memories for injection
+    const formattedMemories: FormattedMemory[] = recent.map((n) => ({
+      content: n.one_liner,
+      type: n.node_type,
+      source: 'memory',
+      confidence: 1.0, // Recent memories have high relevance
+      ageMs: Date.now() - n.last_updated,
+      nodeId: n.id,
+      oneLiner: n.one_liner,
+    }));
 
-Use synthesis_unfold(node_id) to expand any node.
-Use synthesis_search(query) to find specific context.
-</total_recall_context>`,
-      },
-    })
-  );
+    // Use context formatter for consistent output
+    const formatter = createContextFormatter();
+    const formattedContext = formatter.formatForInjection(formattedMemories, coreMemory, {
+      verbosity: 'standard',
+      includeCoreMemory: true,
+      includeNodeIds: true,
+    });
 
-  await db.close();
+    // Fallback if formatter returns empty
+    const contextOutput =
+      formattedContext ||
+      `<total_recall_context>
+No memories found. Use synthesis_search(query) to find specific context.
+</total_recall_context>`;
+
+    // Output hook response immediately
+    console.log(
+      JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: contextOutput,
+        },
+      })
+    );
+  } finally {
+    await db.close();
+  }
 
   // NOTE: We no longer spawn session-init here.
   // session-init was creating garbage "Session started: timestamp" nodes.

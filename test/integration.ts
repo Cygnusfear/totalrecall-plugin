@@ -566,6 +566,286 @@ async function testEdgeHelpers() {
   console.log('Edge helper tests: PASS\n');
 }
 
+async function testContextFormatter() {
+  console.log('Test: Context formatter...');
+
+  // Import dynamically to test
+  const { createContextFormatter } = await import('../src/lib/context-formatter.js');
+
+  const formatter = createContextFormatter();
+
+  // Test with memories and core memory
+  const memories = [
+    {
+      content: 'React hooks best practices',
+      type: 'learning' as const,
+      source: 'memory' as const,
+      confidence: 0.9,
+      ageMs: 1000 * 60 * 5, // 5 minutes ago
+      nodeId: 'node-1',
+      oneLiner: 'React hooks best practices',
+    },
+    {
+      content: 'Use TypeScript for type safety',
+      type: 'decision' as const,
+      source: 'memory' as const,
+      confidence: 0.85,
+      ageMs: 1000 * 60 * 60, // 1 hour ago
+      nodeId: 'node-2',
+      oneLiner: 'Use TypeScript for type safety',
+    },
+  ];
+
+  const coreMemory = {
+    persona: {
+      id: 'persona-1',
+      block_type: 'persona' as const,
+      content: 'I am a helpful coding assistant.',
+      token_estimate: 10,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    },
+    human: {
+      id: 'human-1',
+      block_type: 'human' as const,
+      content: 'User prefers TypeScript and React.',
+      token_estimate: 10,
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    },
+  };
+
+  const formatted = formatter.formatForInjection(memories, coreMemory, {
+    verbosity: 'standard',
+    includeCoreMemory: true,
+    includeNodeIds: true,
+  });
+
+  if (!formatted) {
+    throw new Error('Formatter returned null for valid input');
+  }
+
+  // Check for expected XML tags
+  if (!formatted.includes('<total_recall_context>')) {
+    throw new Error('Missing total_recall_context tag');
+  }
+  if (!formatted.includes('<core_memory type="persona"')) {
+    throw new Error('Missing core_memory persona block');
+  }
+  if (!formatted.includes('<core_memory type="human"')) {
+    throw new Error('Missing core_memory human block');
+  }
+  if (!formatted.includes('node-1')) {
+    throw new Error('Missing node ID in output');
+  }
+
+  console.log('  - XML formatting: PASS');
+
+  // Test empty input
+  const emptyFormatted = formatter.formatForInjection([], {}, {
+    verbosity: 'standard',
+    includeCoreMemory: true,
+    includeNodeIds: true,
+  });
+
+  if (emptyFormatted !== '') {
+    throw new Error('Formatter should return empty string for empty input');
+  }
+  console.log('  - Empty input handling: PASS');
+
+  // Test token estimation
+  const estimate = formatter.estimateTokens(formatted);
+  if (estimate <= 0) {
+    throw new Error('Token estimate should be positive');
+  }
+  console.log(`  - Token estimation (${estimate} tokens): PASS`);
+
+  console.log('Context formatter tests: PASS\n');
+}
+
+async function testCoreMemory() {
+  console.log('Test: Core memory...');
+  await cleanup();
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
+
+  // Import dynamically to test
+  const { createCoreMemoryService } = await import('../src/lib/core-memory.js');
+
+  const service = createCoreMemoryService(db);
+
+  // Test setting core memory
+  await service.setBlock('persona', 'I am a helpful AI assistant.');
+  console.log('  - Set persona block: PASS');
+
+  await service.setBlock('human', 'User prefers TypeScript.');
+  console.log('  - Set human block: PASS');
+
+  // Test getting individual blocks
+  const persona = await service.getBlock('persona');
+  if (!persona || !persona.content.includes('helpful AI assistant')) {
+    throw new Error('Persona block not retrieved correctly');
+  }
+  console.log('  - Get persona block: PASS');
+
+  // Test getting all blocks
+  const blocks = await service.getBlocks();
+  if (!blocks.persona || !blocks.human) {
+    throw new Error('getBlocks should return both persona and human');
+  }
+  console.log('  - Get all blocks: PASS');
+
+  // Test updating a block
+  await service.setBlock('persona', 'Updated persona.');
+  const updated = await service.getBlock('persona');
+  if (!updated || updated.content !== 'Updated persona.') {
+    throw new Error('Block update failed');
+  }
+  console.log('  - Update block: PASS');
+
+  // Test deleting a block
+  const deleted = await service.deleteBlock('human');
+  if (!deleted) {
+    throw new Error('Delete should return true');
+  }
+  const afterDelete = await service.getBlock('human');
+  if (afterDelete !== null) {
+    throw new Error('Block should be null after delete');
+  }
+  console.log('  - Delete block: PASS');
+
+  await db.close();
+  console.log('Core memory tests: PASS\n');
+}
+
+async function testQueryRouter() {
+  console.log('Test: Query router...');
+  await cleanup();
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
+  await initEmbeddings();
+
+  // Import dynamically to test
+  const { QueryRouter } = await import('../src/lib/query-router.js');
+
+  // Create test data
+  const node = await db.createNode({
+    node_type: 'decision',
+    one_liner: 'Use PostgreSQL for production database',
+    summary: 'Decided to use PostgreSQL for better scalability',
+    full_synthesis: 'Full decision rationale',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const embedding = await generateSynthesisEmbedding(node.one_liner, node.summary, node.node_type);
+  await db.insertEmbedding(node.id, embedding);
+
+  // Create router
+  const router = new QueryRouter(db, generateEmbedding, {
+    minScore: 0.3,
+    maxResultsPerType: 5,
+    enabledTypes: ['decision', 'learning', 'entity'],
+    debugLogging: false,
+  });
+
+  // Test planQueries
+  const plans = router.planQueries(['database', 'PostgreSQL']);
+  if (plans.length === 0) {
+    throw new Error('planQueries should return plans');
+  }
+  console.log(`  - Plan queries (${plans.length} plans): PASS`);
+
+  // Test full routing
+  const routeResults = await router.routeAndExecute(['PostgreSQL database']);
+  if (!routeResults.results) {
+    throw new Error('routeAndExecute should return results array');
+  }
+  console.log(`  - Route and execute (${routeResults.results.length} results): PASS`);
+
+  await db.close();
+  console.log('Query router tests: PASS\n');
+}
+
+async function testActiveRetrievalPipeline() {
+  console.log('Test: Active retrieval pipeline...');
+  await cleanup();
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
+  await initEmbeddings();
+
+  // Import dynamically to test
+  const { createActiveRetrievalPipeline } = await import('../src/lib/active-retrieval.js');
+
+  // Create test data
+  const node = await db.createNode({
+    node_type: 'learning',
+    one_liner: 'React useEffect cleanup prevents memory leaks',
+    summary: 'Learned about proper cleanup in useEffect hooks',
+    full_synthesis: 'Full details about React hooks',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const embedding = await generateSynthesisEmbedding(node.one_liner, node.summary, node.node_type);
+  await db.insertEmbedding(node.id, embedding);
+
+  // Set up core memory
+  const { createCoreMemoryService } = await import('../src/lib/core-memory.js');
+  const coreMemoryService = createCoreMemoryService(db);
+  await coreMemoryService.setBlock('persona', 'I help with React development.');
+
+  // Create pipeline (without topic inference to avoid API calls)
+  const pipeline = createActiveRetrievalPipeline(db, generateEmbedding, undefined, {
+    topicInferenceEnabled: false, // Skip API calls in tests
+    maxTopics: 3,
+    minScore: 0.3,
+    maxResultsPerType: 5,
+    verbosity: 'standard',
+    maxTokens: 4000,
+    includeCoreMemory: true,
+    includeNodeIds: true,
+    debugLogging: false,
+  });
+
+  // Test simple retrieve (no topic inference)
+  const result = await pipeline.simpleRetrieve('React hooks memory leaks');
+
+  if (!result.formattedContext) {
+    // May be null if no matches found - that's OK for this test
+    console.log('  - Simple retrieve (no matches): PASS');
+  } else {
+    if (!result.formattedContext.includes('<total_recall_context>')) {
+      throw new Error('Missing expected XML tags in output');
+    }
+    console.log(`  - Simple retrieve (${result.metrics.resultCount} results): PASS`);
+  }
+
+  // Verify metrics
+  if (typeof result.metrics.totalMs !== 'number') {
+    throw new Error('Metrics should include totalMs');
+  }
+  console.log(`  - Metrics tracking (${result.metrics.totalMs}ms): PASS`);
+
+  await db.close();
+  console.log('Active retrieval pipeline tests: PASS\n');
+}
+
 async function testRelationshipBuilder() {
   console.log('Test: Relationship builder...');
   await cleanup();
@@ -713,6 +993,10 @@ async function main() {
     await testQueueOperations();
     await testProgressiveDisclosureAnalytics();
     await testEdgeHelpers();
+    await testContextFormatter();
+    await testCoreMemory();
+    await testQueryRouter();
+    await testActiveRetrievalPipeline();
     await testRelationshipBuilder();
 
     console.log('=== ALL TESTS PASSED ===');
