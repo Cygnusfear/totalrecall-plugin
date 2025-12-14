@@ -11,7 +11,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getDatabase, SynthesisDatabase } from './db.js';
+import { getDatabase, SynthesisDatabase, supportsHybridSearch } from './db.js';
 import { generateSynthesisEmbedding, generateEmbedding, initEmbeddings } from './embeddings.js';
 import { SynthesisWorker } from './synthesis-worker.js';
 import { LLMSynthesisClient } from './llm-synthesis.js';
@@ -452,11 +452,29 @@ async function handleSynthesisSearch(args: SynthesisSearchArgs) {
   const startTime = Date.now();
 
   try {
-    // Generate query embedding
-    const queryEmbedding = await generateEmbedding(query);
+    let results;
+    let searchMode: 'hybrid' | 'vector' = 'vector';
 
-    // Search using sqlite-vec (over-fetch to account for date filtering)
-    let results = await db.searchByVector(queryEmbedding, max_results * 2, min_score, node_types);
+    // Use hybrid search on PostgreSQL, vector-only on SQLite
+    if (supportsHybridSearch(db)) {
+      // Generate query embedding for hybrid search
+      const queryEmbedding = await generateEmbedding(query);
+
+      // Use hybrid search combining vector, BM25, and trigram
+      results = await db.hybridSearch({
+        query,
+        queryEmbedding,
+        maxResults: max_results * 2, // Over-fetch to account for date filtering
+        minScore: min_score,
+        nodeTypes: node_types,
+        searchMode: 'hybrid',
+      });
+      searchMode = 'hybrid';
+    } else {
+      // Fallback to vector-only search for SQLite
+      const queryEmbedding = await generateEmbedding(query);
+      results = await db.searchByVector(queryEmbedding, max_results * 2, min_score, node_types);
+    }
 
     // Apply date filters
     if (after || before) {
@@ -501,10 +519,11 @@ async function handleSynthesisSearch(args: SynthesisSearchArgs) {
         created_at: r.created_at,
       })),
       search_latency_ms: searchLatencyMs,
+      search_mode: searchMode,
       query,
       message:
         results.length > 0
-          ? `Found ${results.length} relevant synthesis nodes`
+          ? `Found ${results.length} relevant synthesis nodes (${searchMode} search)`
           : 'No relevant synthesis nodes found. Try a different query or lower min_score.',
       next_step: 'Use synthesis_unfold(node_id) to expand any result that looks relevant.',
     };
