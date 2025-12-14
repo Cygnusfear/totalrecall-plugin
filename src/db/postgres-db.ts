@@ -559,6 +559,33 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
     `;
   }
 
+  async searchRawContentByText(
+    query: string,
+    limit: number = 20,
+    includeOrphans: boolean = true
+  ): Promise<RawContent[]> {
+    // Case-insensitive ILIKE search for PostgreSQL
+    const searchPattern = `%${query}%`;
+
+    if (includeOrphans) {
+      const rows = await this.sql`
+        SELECT * FROM raw_content
+        WHERE content ILIKE ${searchPattern}
+        ORDER BY timestamp DESC
+        LIMIT ${limit}
+      `;
+      return rows.map((r: Record<string, unknown>) => this.mapRawContentFromDb(r));
+    } else {
+      const rows = await this.sql`
+        SELECT * FROM raw_content
+        WHERE content ILIKE ${searchPattern} AND synthesis_node_id IS NOT NULL
+        ORDER BY timestamp DESC
+        LIMIT ${limit}
+      `;
+      return rows.map((r: Record<string, unknown>) => this.mapRawContentFromDb(r));
+    }
+  }
+
   // ============ Synthesis Queue Operations ============
 
   async createSynthesisQueueItem(

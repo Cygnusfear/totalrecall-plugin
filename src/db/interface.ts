@@ -205,6 +205,15 @@ export interface ISynthesisDatabase {
    */
   linkRawContentToSynthesis(rawContentIds: string[], synthesisNodeId: string): Promise<void>;
 
+  /**
+   * Search raw content by text (case-insensitive LIKE search)
+   */
+  searchRawContentByText(
+    query: string,
+    limit?: number,
+    includeOrphans?: boolean
+  ): Promise<RawContent[]>;
+
   // ============ Synthesis Queue Operations ============
 
   /**

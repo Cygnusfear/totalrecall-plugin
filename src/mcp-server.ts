@@ -275,6 +275,35 @@ Use this to monitor performance:
       },
     },
   },
+  {
+    name: 'raw_search',
+    description: `Search raw conversation content by text. Use when you need to find specific phrases, code snippets, or discussions that may not have been synthesized yet.
+
+Returns raw conversation chunks matching the query, sorted by recency. Each result includes the original content, session ID, and timestamp.
+
+Use this to:
+- Find exact phrases or code mentioned in past conversations
+- Search for content not yet linked to synthesis nodes
+- Verify what was actually said vs synthesized understanding`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Text to search for (case-insensitive substring match)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum results to return (default: 20)',
+        },
+        include_orphans: {
+          type: 'boolean',
+          description: 'Include content not yet linked to synthesis nodes (default: true)',
+        },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // List tools handler
@@ -320,6 +349,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'progressive_disclosure_stats':
         result = await handleProgressiveDisclosureStats(args as unknown as ProgressiveDisclosureStatsArgs);
+        break;
+
+      case 'raw_search':
+        result = await handleRawSearch(args as unknown as RawSearchArgs);
         break;
 
       default:
@@ -651,13 +684,23 @@ async function handleSynthesisUnfold(args: SynthesisUnfoldArgs) {
     response.first_seen = node.first_seen;
     response.last_updated = node.last_updated;
   } else if (depth === 'raw') {
-    // Full synthesis (no raw content storage in standalone)
+    // Include full synthesis plus original raw content
     response.one_liner = node.one_liner;
     response.summary = node.summary;
     response.full_synthesis = node.full_synthesis;
     response.entity_name = node.entity_name;
     response.temporal_context = node.temporal_context;
-    response.raw_refs = []; // Not implemented in standalone
+
+    // Fetch linked raw content for this synthesis node
+    const rawContent = await db.getRawContentBySynthesis(node.id);
+    response.raw_refs = rawContent.map((rc) => ({
+      id: rc.id,
+      content_type: rc.content_type,
+      content: rc.content,
+      timestamp: rc.timestamp,
+      message_index: rc.message_index,
+    }));
+    response.raw_content_count = rawContent.length;
   }
 
   return response;
@@ -987,6 +1030,59 @@ async function handleProgressiveDisclosureStats(args: ProgressiveDisclosureStats
     return {
       error: 'Failed to get stats',
       message: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+interface RawSearchArgs {
+  query: string;
+  limit?: number;
+  include_orphans?: boolean;
+}
+
+async function handleRawSearch(args: RawSearchArgs) {
+  const { query, limit = 20, include_orphans = true } = args;
+  const startTime = Date.now();
+
+  try {
+    if (!query || query.trim().length === 0) {
+      return {
+        error: 'Empty query',
+        message: 'Query string is required',
+        results: [],
+      };
+    }
+
+    const results = await db.searchRawContentByText(query, limit, include_orphans);
+    const searchLatencyMs = Date.now() - startTime;
+
+    return {
+      results: results.map((rc) => ({
+        id: rc.id,
+        session_id: rc.session_id,
+        content_type: rc.content_type,
+        content: rc.content.length > 500 ? rc.content.slice(0, 500) + '...' : rc.content,
+        full_content_length: rc.content.length,
+        timestamp: rc.timestamp,
+        message_index: rc.message_index,
+        synthesis_node_id: rc.synthesis_node_id,
+        is_orphan: rc.synthesis_node_id === null,
+      })),
+      total_results: results.length,
+      search_latency_ms: searchLatencyMs,
+      query,
+      include_orphans,
+      message:
+        results.length > 0
+          ? `Found ${results.length} raw content chunks matching "${query}"`
+          : `No raw content found matching "${query}"`,
+    };
+  } catch (error) {
+    return {
+      error: 'Raw search failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      results: [],
+      search_latency_ms: Date.now() - startTime,
     };
   }
 }

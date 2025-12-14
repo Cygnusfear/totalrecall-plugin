@@ -846,6 +846,103 @@ async function testActiveRetrievalPipeline() {
   console.log('Active retrieval pipeline tests: PASS\n');
 }
 
+async function testRawContentSearch() {
+  console.log('Test: Raw content search...');
+  await cleanup();
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
+
+  // Create a synthesis node to link some raw content
+  const node = await db.createNode({
+    node_type: 'learning',
+    one_liner: 'Authentication best practices',
+    summary: 'Learned about JWT vs session tokens',
+    full_synthesis: 'Full details about authentication',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'search-test-session',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  // Create raw content - some linked, some orphaned
+  await db.createRawContent({
+    id: 'raw-search-1',
+    session_id: 'search-test-session',
+    synthesis_node_id: node.id,
+    content_type: 'message',
+    content: 'We should use JWT tokens for authentication in the API',
+    agent_id: null,
+    timestamp: Date.now(),
+    message_index: 0,
+  });
+
+  await db.createRawContent({
+    id: 'raw-search-2',
+    session_id: 'search-test-session',
+    synthesis_node_id: null, // orphan
+    content_type: 'message',
+    content: 'The database migration needs to include user tokens table',
+    agent_id: null,
+    timestamp: Date.now() + 1000,
+    message_index: 1,
+  });
+
+  await db.createRawContent({
+    id: 'raw-search-3',
+    session_id: 'search-test-session',
+    synthesis_node_id: null, // orphan
+    content_type: 'message',
+    content: 'React components for the login form',
+    agent_id: null,
+    timestamp: Date.now() + 2000,
+    message_index: 2,
+  });
+
+  // Test search with include_orphans=true (default)
+  const resultsAll = await db.searchRawContentByText('tokens', 20, true);
+  if (resultsAll.length !== 2) {
+    throw new Error(`Expected 2 results for "tokens", got ${resultsAll.length}`);
+  }
+  console.log('  - Search all content (include orphans): PASS');
+
+  // Test search with include_orphans=false (only linked content)
+  const resultsLinked = await db.searchRawContentByText('tokens', 20, false);
+  if (resultsLinked.length !== 1) {
+    throw new Error(`Expected 1 linked result for "tokens", got ${resultsLinked.length}`);
+  }
+  console.log('  - Search linked content only: PASS');
+
+  // Test case-insensitive search
+  const resultsUpper = await db.searchRawContentByText('JWT', 20, true);
+  if (resultsUpper.length !== 1) {
+    throw new Error(`Expected 1 result for "JWT", got ${resultsUpper.length}`);
+  }
+  console.log('  - Case-insensitive search: PASS');
+
+  // Test no results
+  const resultsNone = await db.searchRawContentByText('nonexistent-xyz', 20, true);
+  if (resultsNone.length !== 0) {
+    throw new Error(`Expected 0 results for nonexistent query, got ${resultsNone.length}`);
+  }
+  console.log('  - No results for non-matching query: PASS');
+
+  // Test limit
+  const resultsLimit = await db.searchRawContentByText('the', 1, true);
+  if (resultsLimit.length > 1) {
+    throw new Error(`Limit not respected, got ${resultsLimit.length} results`);
+  }
+  console.log('  - Limit parameter respected: PASS');
+
+  await db.close();
+  console.log('Raw content search tests: PASS\n');
+}
+
 async function testRelationshipBuilder() {
   console.log('Test: Relationship builder...');
   await cleanup();
@@ -997,6 +1094,7 @@ async function main() {
     await testCoreMemory();
     await testQueryRouter();
     await testActiveRetrievalPipeline();
+    await testRawContentSearch();
     await testRelationshipBuilder();
 
     console.log('=== ALL TESTS PASSED ===');

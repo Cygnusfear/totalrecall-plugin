@@ -609,6 +609,45 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     }
   }
 
+  async searchRawContentByText(
+    query: string,
+    limit: number = 20,
+    includeOrphans: boolean = true
+  ): Promise<RawContent[]> {
+    // Case-insensitive LIKE search on content
+    const searchPattern = `%${query}%`;
+
+    if (includeOrphans) {
+      // Search all raw content
+      return this.withRetry(() =>
+        this.db
+          .prepare(
+            `
+        SELECT * FROM raw_content
+        WHERE content LIKE ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `
+          )
+          .all(searchPattern, limit)
+      ) as RawContent[];
+    } else {
+      // Only search raw content linked to synthesis nodes
+      return this.withRetry(() =>
+        this.db
+          .prepare(
+            `
+        SELECT * FROM raw_content
+        WHERE content LIKE ? AND synthesis_node_id IS NOT NULL
+        ORDER BY timestamp DESC
+        LIMIT ?
+      `
+          )
+          .all(searchPattern, limit)
+      ) as RawContent[];
+    }
+  }
+
   // ============ Synthesis Queue Operations ============
 
   async createSynthesisQueueItem(
