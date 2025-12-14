@@ -1225,6 +1225,152 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     return lowSalienceNodes.slice(0, limit);
   }
 
+  // ============ Time-Based Queries (Issue #10) ============
+
+  async queryNodesByTimeRange(
+    startTime: number,
+    endTime: number,
+    options?: {
+      nodeTypes?: NodeType[];
+      limit?: number;
+      orderBy?: 'created_at' | 'last_updated';
+    }
+  ): Promise<SynthesisNode[]> {
+    const { nodeTypes, limit = 1000, orderBy = 'created_at' } = options ?? {};
+
+    let query = `
+      SELECT * FROM synthesis_nodes
+      WHERE ${orderBy} BETWEEN ? AND ?
+    `;
+    const params: (number | string)[] = [startTime, endTime];
+
+    if (nodeTypes && nodeTypes.length > 0) {
+      query += ` AND node_type IN (${nodeTypes.map(() => '?').join(',')})`;
+      params.push(...nodeTypes);
+    }
+
+    query += ` ORDER BY ${orderBy} DESC LIMIT ?`;
+    params.push(limit);
+
+    return this.db.prepare(query).all(...params) as SynthesisNode[];
+  }
+
+  async getActivitySummary(
+    startTime: number,
+    endTime: number,
+    options?: {
+      groupBy?: 'type' | 'date' | 'both';
+      includeNodeSamples?: boolean;
+      maxSamplesPerGroup?: number;
+    }
+  ): Promise<import('./interface.js').ActivitySummary> {
+    const { groupBy = 'type', includeNodeSamples = true, maxSamplesPerGroup = 3 } = options ?? {};
+
+    // Get all nodes in time range
+    const nodes = await this.queryNodesByTimeRange(startTime, endTime, {
+      orderBy: 'created_at',
+      limit: 10000,
+    });
+
+    // Build node type distribution
+    const nodeTypeDistribution: Record<NodeType, number> = {
+      decision: 0,
+      learning: 0,
+      entity: 0,
+      event: 0,
+      task: 0,
+      summary: 0,
+    };
+
+    for (const node of nodes) {
+      nodeTypeDistribution[node.node_type] = (nodeTypeDistribution[node.node_type] || 0) + 1;
+    }
+
+    // Build groups based on groupBy option
+    const groups: import('./interface.js').ActivityGroup[] = [];
+    const groupMap = new Map<string, SynthesisNode[]>();
+
+    for (const node of nodes) {
+      let groupKey: string;
+
+      if (groupBy === 'type') {
+        groupKey = node.node_type;
+      } else if (groupBy === 'date') {
+        const date = new Date(node.created_at);
+        groupKey = date.toISOString().split('T')[0]; // YYYY-MM-DD
+      } else {
+        // both
+        const date = new Date(node.created_at);
+        const dateStr = date.toISOString().split('T')[0];
+        groupKey = `${node.node_type}:${dateStr}`;
+      }
+
+      if (!groupMap.has(groupKey)) {
+        groupMap.set(groupKey, []);
+      }
+      groupMap.get(groupKey)!.push(node);
+    }
+
+    // Convert to ActivityGroup format
+    for (const [groupKey, groupNodes] of groupMap.entries()) {
+      const group: import('./interface.js').ActivityGroup = {
+        groupKey,
+        count: groupNodes.length,
+      };
+
+      // Parse group key
+      if (groupBy === 'type') {
+        group.nodeType = groupKey as NodeType;
+      } else if (groupBy === 'date') {
+        group.date = groupKey;
+      } else {
+        const [type, date] = groupKey.split(':');
+        group.nodeType = type as NodeType;
+        group.date = date;
+      }
+
+      // Add sample nodes
+      if (includeNodeSamples) {
+        group.sampleNodes = groupNodes.slice(0, maxSamplesPerGroup).map((n) => ({
+          node_id: n.id,
+          one_liner: n.one_liner,
+          created_at: n.created_at,
+        }));
+      }
+
+      groups.push(group);
+    }
+
+    // Sort groups by count (descending)
+    groups.sort((a, b) => b.count - a.count);
+
+    // Build daily activity if grouping by date or both
+    let dailyActivity: Array<{ date: string; count: number }> | undefined;
+    if (groupBy === 'date' || groupBy === 'both') {
+      const dailyMap = new Map<string, number>();
+      for (const node of nodes) {
+        const date = new Date(node.created_at).toISOString().split('T')[0];
+        dailyMap.set(date, (dailyMap.get(date) || 0) + 1);
+      }
+
+      dailyActivity = Array.from(dailyMap.entries())
+        .map(([date, count]) => ({ date, count }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+    }
+
+    return {
+      timeRange: {
+        start: startTime,
+        end: endTime,
+        durationMs: endTime - startTime,
+      },
+      totalNodes: nodes.length,
+      groups,
+      nodeTypeDistribution,
+      dailyActivity,
+    };
+  }
+
   // ============ Utility ============
 
   async close(): Promise<void> {

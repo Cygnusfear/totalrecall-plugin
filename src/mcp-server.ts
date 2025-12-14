@@ -400,6 +400,54 @@ Salience is calculated from:
       },
     },
   },
+  {
+    name: 'activity_summary',
+    description: `Get a time-based summary of synthesis activity. Use this to understand what happened during a specific time period.
+
+Use this to:
+- Review what was learned/decided today, this week, or this month
+- Analyze activity patterns over time
+- Get a snapshot of memory creation trends
+- Find gaps or periods of high activity
+
+Supports both preset time windows (today, this_week, this_month, etc.) and custom date ranges.`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        time_window: {
+          type: 'string',
+          enum: ['today', 'yesterday', 'this_week', 'last_week', 'this_month', 'last_month', 'last_7_days', 'last_30_days', 'custom'],
+          description: 'Preset time window or "custom" for custom range (default: today)',
+        },
+        start_time: {
+          type: 'string',
+          description: 'For custom window: start date/time (ISO 8601 format or Unix timestamp)',
+        },
+        end_time: {
+          type: 'string',
+          description: 'For custom window: end date/time (ISO 8601 format or Unix timestamp, default: now)',
+        },
+        group_by: {
+          type: 'string',
+          enum: ['type', 'date', 'both'],
+          description: 'How to group results: by node type, by date, or both (default: type)',
+        },
+        include_samples: {
+          type: 'boolean',
+          description: 'Include sample nodes for each group (default: true)',
+        },
+        max_samples_per_group: {
+          type: 'number',
+          description: 'Max sample nodes per group (default: 3)',
+        },
+        node_types: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Filter by specific node types (optional)',
+        },
+      },
+    },
+  },
 ];
 
 // List tools handler
@@ -457,6 +505,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'memory_consolidate':
         result = await handleMemoryConsolidate(args as unknown as MemoryConsolidateArgs);
+        break;
+
+      case 'activity_summary':
+        result = await handleActivitySummary(args as unknown as ActivitySummaryArgs);
         break;
 
       default:
@@ -1352,6 +1404,16 @@ interface MemoryConsolidateArgs {
   };
 }
 
+interface ActivitySummaryArgs {
+  time_window?: 'today' | 'yesterday' | 'this_week' | 'last_week' | 'this_month' | 'last_month' | 'last_7_days' | 'last_30_days' | 'custom';
+  start_time?: string;
+  end_time?: string;
+  group_by?: 'type' | 'date' | 'both';
+  include_samples?: boolean;
+  max_samples_per_group?: number;
+  node_types?: NodeType[];
+}
+
 async function handleMemoryConsolidate(args: MemoryConsolidateArgs) {
   const { mode = 'all', limit = 20, threshold, config } = args;
   const startTime = Date.now();
@@ -1425,6 +1487,119 @@ async function handleMemoryConsolidate(args: MemoryConsolidateArgs) {
       error: 'Memory consolidation failed',
       message: error instanceof Error ? error.message : 'Unknown error',
       results: [],
+      processing_time_ms: Date.now() - startTime,
+    };
+  }
+}
+
+async function handleActivitySummary(args: ActivitySummaryArgs) {
+  const {
+    time_window = 'today',
+    start_time,
+    end_time,
+    group_by = 'type',
+    include_samples = true,
+    max_samples_per_group = 3,
+    node_types,
+  } = args;
+  const startTime = Date.now();
+
+  try {
+    // Import TIME_WINDOWS
+    const { TIME_WINDOWS } = await import('./db/interface.js');
+
+    // Determine time range
+    let timeRange: { start: number; end: number };
+
+    if (time_window === 'custom') {
+      if (!start_time) {
+        return {
+          error: 'Invalid time range',
+          message: 'start_time is required for custom time window',
+        };
+      }
+
+      // Parse start_time (ISO 8601 or Unix timestamp)
+      const startMs = /^\d+$/.test(start_time)
+        ? parseInt(start_time, 10)
+        : new Date(start_time).getTime();
+
+      // Parse end_time or default to now
+      const endMs = end_time
+        ? /^\d+$/.test(end_time)
+          ? parseInt(end_time, 10)
+          : new Date(end_time).getTime()
+        : Date.now();
+
+      if (isNaN(startMs) || isNaN(endMs)) {
+        return {
+          error: 'Invalid time format',
+          message: 'start_time and end_time must be ISO 8601 dates or Unix timestamps',
+        };
+      }
+
+      timeRange = { start: startMs, end: endMs };
+    } else {
+      // Use preset window
+      const windowKey = time_window.toUpperCase().replace(/_/g, '_') as keyof typeof TIME_WINDOWS;
+      if (!TIME_WINDOWS[windowKey]) {
+        return {
+          error: 'Invalid time window',
+          message: `Unknown time window: ${time_window}`,
+        };
+      }
+      timeRange = TIME_WINDOWS[windowKey]();
+    }
+
+    // Get activity summary from database
+    const summary = await db.getActivitySummary(timeRange.start, timeRange.end, {
+      groupBy: group_by,
+      includeNodeSamples: include_samples,
+      maxSamplesPerGroup: max_samples_per_group,
+    });
+
+    const processingTimeMs = Date.now() - startTime;
+
+    // Format dates
+    const formatDate = (ts: number) => new Date(ts).toISOString().split('T')[0];
+    const formatDateTime = (ts: number) => new Date(ts).toISOString();
+
+    return {
+      time_window,
+      time_range: {
+        start: formatDateTime(summary.timeRange.start),
+        end: formatDateTime(summary.timeRange.end),
+        duration_hours: Math.round(summary.timeRange.durationMs / (1000 * 60 * 60) * 10) / 10,
+        duration_days: Math.round(summary.timeRange.durationMs / (1000 * 60 * 60 * 24) * 10) / 10,
+      },
+      total_nodes: summary.totalNodes,
+      node_type_distribution: summary.nodeTypeDistribution,
+      groups: summary.groups.map((g) => ({
+        group_key: g.groupKey,
+        node_type: g.nodeType,
+        date: g.date,
+        count: g.count,
+        sample_nodes: g.sampleNodes?.map((s) => ({
+          node_id: s.node_id,
+          one_liner: s.one_liner,
+          created_at: formatDateTime(s.created_at),
+        })),
+      })),
+      daily_activity: summary.dailyActivity,
+      processing_time_ms: processingTimeMs,
+      message:
+        summary.totalNodes > 0
+          ? `Found ${summary.totalNodes} synthesis nodes in ${time_window} (${formatDate(timeRange.start)} to ${formatDate(timeRange.end)})`
+          : `No synthesis nodes found in ${time_window}`,
+      next_step:
+        summary.totalNodes > 0
+          ? 'Use synthesis_unfold to get details on any node, or adjust time_window/group_by for different views.'
+          : 'Try a different time window or create new synthesis nodes.',
+    };
+  } catch (error) {
+    return {
+      error: 'Activity summary failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
       processing_time_ms: Date.now() - startTime,
     };
   }

@@ -1390,6 +1390,238 @@ async function testRelationshipBuilder() {
   console.log('Relationship builder tests: PASS\n');
 }
 
+async function testTimeBasedQueries() {
+  console.log('Test: Time-based queries (Issue #10)...');
+  await cleanup();
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
+
+  // Create nodes at different times
+  const now = Date.now();
+  const yesterday = now - 24 * 60 * 60 * 1000;
+  const lastWeek = now - 7 * 24 * 60 * 60 * 1000;
+  const lastMonth = now - 30 * 24 * 60 * 60 * 1000;
+
+  // Node from last month
+  const node1 = await db.createNode({
+    node_type: 'decision',
+    one_liner: 'Old decision from last month',
+    summary: 'A decision made a while ago',
+    full_synthesis: 'Full details',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: lastMonth,
+    last_updated: lastMonth,
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'time-test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+  // Manually set created_at for testing
+  db['db'].prepare('UPDATE synthesis_nodes SET created_at = ? WHERE id = ?').run(lastMonth, node1.id);
+
+  // Node from last week
+  const node2 = await db.createNode({
+    node_type: 'learning',
+    one_liner: 'Learning from last week',
+    summary: 'Something learned last week',
+    full_synthesis: 'Full details',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: lastWeek,
+    last_updated: lastWeek,
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'time-test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+  db['db'].prepare('UPDATE synthesis_nodes SET created_at = ? WHERE id = ?').run(lastWeek, node2.id);
+
+  // Node from yesterday
+  const node3 = await db.createNode({
+    node_type: 'task',
+    one_liner: 'Task from yesterday',
+    summary: 'A task completed yesterday',
+    full_synthesis: 'Full details',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: yesterday,
+    last_updated: yesterday,
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'time-test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+  db['db'].prepare('UPDATE synthesis_nodes SET created_at = ? WHERE id = ?').run(yesterday, node3.id);
+
+  // Node from today
+  const node4 = await db.createNode({
+    node_type: 'event',
+    one_liner: 'Event from today',
+    summary: 'Something that happened today',
+    full_synthesis: 'Full details',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: now,
+    last_updated: now,
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'time-test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+  db['db'].prepare('UPDATE synthesis_nodes SET created_at = ? WHERE id = ?').run(now, node4.id);
+
+  // Test 1: Query last 7 days (should get nodes 2, 3, 4)
+  const last7Days = await db.queryNodesByTimeRange(now - 7 * 24 * 60 * 60 * 1000, now, {
+    orderBy: 'created_at',
+  });
+  if (last7Days.length !== 3) {
+    throw new Error(`Expected 3 nodes in last 7 days, got ${last7Days.length}`);
+  }
+  console.log('  - Query last 7 days: PASS');
+
+  // Test 2: Query by node type
+  const decisionsLast30Days = await db.queryNodesByTimeRange(now - 30 * 24 * 60 * 60 * 1000, now, {
+    nodeTypes: ['decision'],
+    orderBy: 'created_at',
+  });
+  if (decisionsLast30Days.length !== 1 || decisionsLast30Days[0].id !== node1.id) {
+    throw new Error('Node type filter not working correctly');
+  }
+  console.log('  - Query by node type: PASS');
+
+  // Test 3: Activity summary grouped by type
+  const summaryByType = await db.getActivitySummary(now - 30 * 24 * 60 * 60 * 1000, now, {
+    groupBy: 'type',
+    includeNodeSamples: true,
+    maxSamplesPerGroup: 2,
+  });
+
+  if (summaryByType.totalNodes !== 4) {
+    throw new Error(`Expected 4 total nodes, got ${summaryByType.totalNodes}`);
+  }
+
+  if (summaryByType.groups.length !== 4) {
+    throw new Error(`Expected 4 groups (one per type), got ${summaryByType.groups.length}`);
+  }
+
+  const decisionGroup = summaryByType.groups.find((g) => g.nodeType === 'decision');
+  if (!decisionGroup || decisionGroup.count !== 1) {
+    throw new Error('Decision group incorrect');
+  }
+  console.log('  - Activity summary by type: PASS');
+
+  // Test 4: Activity summary grouped by date
+  const summaryByDate = await db.getActivitySummary(now - 30 * 24 * 60 * 60 * 1000, now, {
+    groupBy: 'date',
+    includeNodeSamples: false,
+  });
+
+  if (!summaryByDate.dailyActivity) {
+    throw new Error('Daily activity not populated');
+  }
+
+  // Should have entries for each unique date
+  if (summaryByDate.dailyActivity.length < 3) {
+    throw new Error('Daily activity should have at least 3 entries');
+  }
+  console.log('  - Activity summary by date: PASS');
+
+  // Test 5: Activity summary grouped by both
+  const summaryByBoth = await db.getActivitySummary(now - 30 * 24 * 60 * 60 * 1000, now, {
+    groupBy: 'both',
+    includeNodeSamples: true,
+    maxSamplesPerGroup: 1,
+  });
+
+  // Each group should have both nodeType and date
+  const firstGroup = summaryByBoth.groups[0];
+  if (!firstGroup.nodeType || !firstGroup.date) {
+    throw new Error('Groups should have both nodeType and date when groupBy="both"');
+  }
+
+  // Check groupKey format
+  if (!firstGroup.groupKey.includes(':')) {
+    throw new Error('Group key should be in format "type:date"');
+  }
+
+  console.log('  - Activity summary by both: PASS');
+
+  // Test 6: Node type distribution
+  if (summaryByType.nodeTypeDistribution.decision !== 1) {
+    throw new Error('Node type distribution incorrect for decision');
+  }
+  if (summaryByType.nodeTypeDistribution.learning !== 1) {
+    throw new Error('Node type distribution incorrect for learning');
+  }
+  console.log('  - Node type distribution: PASS');
+
+  // Test 7: Sample nodes
+  const groupWithSamples = summaryByType.groups.find((g) => g.sampleNodes && g.sampleNodes.length > 0);
+  if (!groupWithSamples) {
+    throw new Error('Should have sample nodes');
+  }
+  if (!groupWithSamples.sampleNodes![0].node_id) {
+    throw new Error('Sample node should have node_id');
+  }
+  if (!groupWithSamples.sampleNodes![0].one_liner) {
+    throw new Error('Sample node should have one_liner');
+  }
+  console.log('  - Sample nodes in groups: PASS');
+
+  await db.close();
+  console.log('Time-based queries tests: PASS\n');
+}
+
+async function testTimeWindows() {
+  console.log('Test: TIME_WINDOWS presets...');
+  const { TIME_WINDOWS } = await import('../src/db/interface.js');
+
+  // Test that each preset returns a valid time range
+  const presets = ['TODAY', 'YESTERDAY', 'THIS_WEEK', 'LAST_WEEK', 'THIS_MONTH', 'LAST_MONTH', 'LAST_7_DAYS', 'LAST_30_DAYS'] as const;
+
+  for (const preset of presets) {
+    const range = TIME_WINDOWS[preset]();
+    if (!range.start || !range.end) {
+      throw new Error(`${preset} returned invalid range`);
+    }
+    if (range.start >= range.end) {
+      throw new Error(`${preset} start >= end`);
+    }
+  }
+  console.log('  - All presets return valid ranges: PASS');
+
+  // Test TODAY
+  const today = TIME_WINDOWS.TODAY();
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+  if (Math.abs(today.start - todayStart.getTime()) > 1000) {
+    throw new Error('TODAY start time incorrect');
+  }
+  console.log('  - TODAY preset: PASS');
+
+  // Test LAST_7_DAYS
+  const last7Days = TIME_WINDOWS.LAST_7_DAYS();
+  const expectedStart = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  if (Math.abs(last7Days.start - expectedStart) > 60000) { // Within 1 minute
+    throw new Error('LAST_7_DAYS start time incorrect');
+  }
+  console.log('  - LAST_7_DAYS preset: PASS');
+
+  console.log('TIME_WINDOWS tests: PASS\n');
+}
+
 async function main() {
   console.log('=== TotalRecall Integration Tests ===\n');
 
@@ -1411,6 +1643,8 @@ async function main() {
     await testSynthesisRecall();
     await testNodeIdPrefixResolution();
     await testRelationshipBuilder();
+    await testTimeBasedQueries();
+    await testTimeWindows();
 
     console.log('=== ALL TESTS PASSED ===');
     await cleanup();

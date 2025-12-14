@@ -463,6 +463,36 @@ export interface ISynthesisDatabase {
     limit?: number
   ): Promise<SalienceResult[]>;
 
+  // ============ Time-Based Queries (Issue #10) ============
+
+  /**
+   * Query nodes by time range
+   * Returns nodes created or updated within the specified time window
+   */
+  queryNodesByTimeRange(
+    startTime: number,
+    endTime: number,
+    options?: {
+      nodeTypes?: NodeType[];
+      limit?: number;
+      orderBy?: 'created_at' | 'last_updated';
+    }
+  ): Promise<SynthesisNode[]>;
+
+  /**
+   * Get activity summary for a time period
+   * Returns grouped statistics and representative nodes
+   */
+  getActivitySummary(
+    startTime: number,
+    endTime: number,
+    options?: {
+      groupBy?: 'type' | 'date' | 'both';
+      includeNodeSamples?: boolean;
+      maxSamplesPerGroup?: number;
+    }
+  ): Promise<ActivitySummary>;
+
   // ============ Utility ============
 
   /**
@@ -812,3 +842,91 @@ export function applySalienceDecay(
   const decayFactor = Math.pow(0.5, daysSinceLastAccess / decayHalfLifeDays);
   return currentSalience * decayFactor;
 }
+
+// ============ Time-Based Activity Summary (Issue #10) ============
+
+/**
+ * Activity group for a specific node type or date
+ */
+export interface ActivityGroup {
+  groupKey: string; // e.g., "decision", "2025-01-15", or "decision:2025-01-15"
+  nodeType?: NodeType;
+  date?: string; // YYYY-MM-DD
+  count: number;
+  sampleNodes?: Array<{
+    node_id: string;
+    one_liner: string;
+    created_at: number;
+  }>;
+}
+
+/**
+ * Activity summary for a time period
+ */
+export interface ActivitySummary {
+  timeRange: {
+    start: number;
+    end: number;
+    durationMs: number;
+  };
+  totalNodes: number;
+  groups: ActivityGroup[];
+  nodeTypeDistribution: Record<NodeType, number>;
+  dailyActivity?: Array<{
+    date: string;
+    count: number;
+  }>;
+}
+
+/**
+ * Time window presets for convenience
+ */
+export const TIME_WINDOWS = {
+  TODAY: () => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+    return { start: start.getTime(), end: end.getTime() };
+  },
+  YESTERDAY: () => {
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const start = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 0, 0, 0);
+    const end = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 23, 59, 59);
+    return { start: start.getTime(), end: end.getTime() };
+  },
+  THIS_WEEK: () => {
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const start = new Date(now.getTime() - dayOfWeek * 24 * 60 * 60 * 1000);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start.getTime() + 7 * 24 * 60 * 60 * 1000 - 1);
+    return { start: start.getTime(), end: end.getTime() };
+  },
+  LAST_WEEK: () => {
+    const thisWeek = TIME_WINDOWS.THIS_WEEK();
+    const start = thisWeek.start - 7 * 24 * 60 * 60 * 1000;
+    const end = thisWeek.start - 1;
+    return { start, end };
+  },
+  THIS_MONTH: () => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
+    return { start: start.getTime(), end: end.getTime() };
+  },
+  LAST_MONTH: () => {
+    const now = new Date();
+    const start = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0);
+    const end = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
+    return { start: start.getTime(), end: end.getTime() };
+  },
+  LAST_7_DAYS: () => {
+    const now = Date.now();
+    return { start: now - 7 * 24 * 60 * 60 * 1000, end: now };
+  },
+  LAST_30_DAYS: () => {
+    const now = Date.now();
+    return { start: now - 30 * 24 * 60 * 60 * 1000, end: now };
+  },
+} as const;
