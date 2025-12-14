@@ -17,15 +17,18 @@ import type {
   CoreMemoryBlock,
   CoreMemoryBlockType,
 } from '../schema.js';
-import type {
-  ISynthesisDatabase,
-  NodeQueryFilters,
-  SynthesisQueueFilters,
-  QueueStats,
-  ProgressiveDisclosureAnalytics,
-  RelatedNode,
-  HybridSearchOptions,
-  HybridSearchResult,
+import {
+  type ISynthesisDatabase,
+  type NodeQueryFilters,
+  type SynthesisQueueFilters,
+  type QueueStats,
+  type ProgressiveDisclosureAnalytics,
+  type RelatedNode,
+  type HybridSearchOptions,
+  type HybridSearchResult,
+  type TextSearchMatchLocation,
+  TEXT_SEARCH_FIELDS,
+  processTextSearchResults,
 } from './interface.js';
 
 /**
@@ -200,41 +203,29 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
     return results.map((r) => r.source_session_id as string);
   }
 
+  async queryNodesByIdPrefix(prefix: string, limit: number = 10): Promise<SynthesisNode[]> {
+    // Efficient prefix matching using LIKE
+    const rows = await this.sql`
+      SELECT ${this.sql(this.nodeColumns)}
+      FROM synthesis_nodes
+      WHERE id LIKE ${prefix + '%'}
+      ORDER BY last_updated DESC
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => this.mapNodeFromDb(r as Record<string, unknown>));
+  }
+
   async searchNodesByText(
     term: string,
     limit: number = 20,
     nodeTypes?: NodeType[]
-  ): Promise<
-    Array<
-      SynthesisNode & {
-        match_location: 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases';
-      }
-    >
-  > {
+  ): Promise<Array<SynthesisNode & { match_location: TextSearchMatchLocation }>> {
     // Use ILIKE for case-insensitive search with priority ranking
     const searchPattern = `%${term}%`;
-    const results: Array<
-      SynthesisNode & {
-        match_location: 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases';
-        priority: number;
-      }
-    > = [];
+    const results: Array<SynthesisNode & { match_location: TextSearchMatchLocation; priority: number }> = [];
     const seenIds = new Set<string>();
 
-    // Priority order: entity_name (1), one_liner (2), entity_aliases (3), summary (4), full_synthesis (5)
-    const searches: Array<{
-      location: 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases';
-      column: string;
-      priority: number;
-    }> = [
-      { location: 'entity_name', column: 'entity_name', priority: 1 },
-      { location: 'one_liner', column: 'one_liner', priority: 2 },
-      { location: 'entity_aliases', column: 'entity_aliases', priority: 3 },
-      { location: 'summary', column: 'summary', priority: 4 },
-      { location: 'full_synthesis', column: 'full_synthesis', priority: 5 },
-    ];
-
-    for (const { location, column, priority } of searches) {
+    for (const { location, column, priority } of TEXT_SEARCH_FIELDS) {
       let rows;
       if (nodeTypes?.length) {
         rows = await this.sql`
@@ -262,19 +253,7 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
       }
     }
 
-    // Sort by priority (best match location first), then by last_updated
-    results.sort((a, b) => {
-      if (a.priority !== b.priority) return a.priority - b.priority;
-      return b.last_updated - a.last_updated;
-    });
-
-    // Return only the SynthesisNode & match_location (not the internal priority)
-    return results.slice(0, limit).map((r) => {
-      const { priority: _priority, ...nodeWithLocation } = r;
-      return nodeWithLocation as SynthesisNode & {
-        match_location: 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases';
-      };
-    });
+    return processTextSearchResults(results, limit);
   }
 
   // ============ Vector Operations ============

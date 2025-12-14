@@ -135,6 +135,12 @@ export interface ISynthesisDatabase {
   getAllSessionIds(): Promise<string[]>;
 
   /**
+   * Query nodes by ID prefix (like git short hashes)
+   * Efficient database-level prefix matching instead of loading all nodes
+   */
+  queryNodesByIdPrefix(prefix: string, limit?: number): Promise<SynthesisNode[]>;
+
+  /**
    * Search nodes by exact text match (LIKE) across all text fields
    * Returns nodes where the term appears in one_liner, summary, full_synthesis,
    * entity_name, or entity_aliases (case-insensitive)
@@ -386,4 +392,46 @@ export function supportsHybridSearch(
   db: ISynthesisDatabase
 ): db is ISynthesisDatabase & Required<Pick<ISynthesisDatabase, 'hybridSearch' | 'searchByBM25' | 'searchByTrigram'>> {
   return db.supportsHybridSearch();
+}
+
+// ============ Shared Utilities for Text Search ============
+
+/** Match location type for text search results */
+export type TextSearchMatchLocation = 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases';
+
+/** Search field configuration for priority-based text search */
+export interface TextSearchField {
+  location: TextSearchMatchLocation;
+  column: string;
+  priority: number;
+}
+
+/** Default search fields in priority order (lowest = highest priority) */
+export const TEXT_SEARCH_FIELDS: TextSearchField[] = [
+  { location: 'entity_name', column: 'entity_name', priority: 1 },
+  { location: 'one_liner', column: 'one_liner', priority: 2 },
+  { location: 'entity_aliases', column: 'entity_aliases', priority: 3 },
+  { location: 'summary', column: 'summary', priority: 4 },
+  { location: 'full_synthesis', column: 'full_synthesis', priority: 5 },
+];
+
+/**
+ * Process and deduplicate text search results by priority
+ * Shared between SQLite and PostgreSQL implementations
+ */
+export function processTextSearchResults<T extends { id: string; last_updated: number }>(
+  results: Array<T & { match_location: TextSearchMatchLocation; priority: number }>,
+  limit: number
+): Array<T & { match_location: TextSearchMatchLocation }> {
+  // Sort by priority (best match location first), then by last_updated
+  results.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return b.last_updated - a.last_updated;
+  });
+
+  // Return only the node & match_location (not the internal priority)
+  return results.slice(0, limit).map((r) => {
+    const { priority: _priority, ...nodeWithLocation } = r;
+    return nodeWithLocation as T & { match_location: TextSearchMatchLocation };
+  });
 }

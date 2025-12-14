@@ -15,9 +15,26 @@ BEGIN
   END IF;
 END $$;
 
--- Create index for vector similarity search (if doesn't exist)
--- Uses vchordrq from vchord extension for fast approximate nearest neighbor search
-CREATE INDEX IF NOT EXISTS idx_raw_content_embedding
-ON raw_content USING vchordrq (embedding vector_l2_ops);
+-- Create index for vector similarity search
+-- Tries vchordrq (vchord extension) first, falls back to ivfflat (standard pgvector)
+DO $$
+BEGIN
+  -- Check if index already exists
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes WHERE indexname = 'idx_raw_content_embedding'
+  ) THEN
+    -- Try vchordrq first (faster, from vchord extension)
+    BEGIN
+      EXECUTE 'CREATE INDEX idx_raw_content_embedding ON raw_content USING vchordrq (embedding vector_l2_ops)';
+      RAISE NOTICE 'Created vchordrq index for raw_content embeddings';
+    EXCEPTION WHEN undefined_object THEN
+      -- vchordrq not available, fall back to ivfflat (standard pgvector)
+      EXECUTE 'CREATE INDEX idx_raw_content_embedding ON raw_content USING ivfflat (embedding vector_l2_ops) WITH (lists = 100)';
+      RAISE NOTICE 'Created ivfflat index for raw_content embeddings (vchordrq not available)';
+    END;
+  ELSE
+    RAISE NOTICE 'idx_raw_content_embedding already exists';
+  END IF;
+END $$;
 
 DO $$ BEGIN RAISE NOTICE 'Raw content embeddings migration complete'; END $$;

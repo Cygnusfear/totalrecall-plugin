@@ -303,7 +303,11 @@ Use this to:
         },
         include_semantic_fallback: {
           type: 'boolean',
-          description: 'If exact matches < 3, also run semantic search (default: true)',
+          description: 'If exact matches < semantic_fallback_threshold, also run semantic search (default: true)',
+        },
+        semantic_fallback_threshold: {
+          type: 'number',
+          description: 'Run semantic search as fallback if exact matches are below this threshold (default: 3)',
         },
         node_types: {
           type: 'array',
@@ -629,6 +633,7 @@ interface SynthesisUnfoldArgs {
 /**
  * Resolve a node ID prefix to full UUID (like git short hashes)
  * Returns the full node ID if unique match found, null otherwise
+ * Uses efficient database-level LIKE query instead of loading all nodes
  */
 async function resolveNodeIdPrefix(prefix: string): Promise<{
   resolvedId: string | null;
@@ -640,10 +645,8 @@ async function resolveNodeIdPrefix(prefix: string): Promise<{
     return { resolvedId: prefix, candidates: [] };
   }
 
-  // Query nodes that start with this prefix
-  // We need to search all nodes - get a reasonable limit
-  const allNodes = await db.queryNodes({ limit: 1000 });
-  const matches = allNodes.filter((n) => n.id.startsWith(prefix));
+  // Efficient database-level prefix matching (returns up to 10 candidates)
+  const matches = await db.queryNodesByIdPrefix(prefix, 10);
 
   if (matches.length === 0) {
     return { resolvedId: null, candidates: [], error: 'No matching nodes found' };
@@ -1089,11 +1092,21 @@ interface SynthesisRecallArgs {
   term: string;
   max_results?: number;
   include_semantic_fallback?: boolean;
+  semantic_fallback_threshold?: number;
   node_types?: NodeType[];
 }
 
+/** Default threshold for triggering semantic fallback in synthesis_recall */
+const DEFAULT_SEMANTIC_FALLBACK_THRESHOLD = 3;
+
 async function handleSynthesisRecall(args: SynthesisRecallArgs) {
-  const { term, max_results = 10, include_semantic_fallback = true, node_types } = args;
+  const {
+    term,
+    max_results = 10,
+    include_semantic_fallback = true,
+    semantic_fallback_threshold = DEFAULT_SEMANTIC_FALLBACK_THRESHOLD,
+    node_types,
+  } = args;
   const startTime = Date.now();
 
   try {
@@ -1119,7 +1132,7 @@ async function handleSynthesisRecall(args: SynthesisRecallArgs) {
       match_locations[match.id] = match.match_location;
     }
 
-    // Phase 2: Semantic fallback if exact matches < 3
+    // Phase 2: Semantic fallback if exact matches < threshold
     let semanticMatches: Array<{
       node_id: string;
       one_liner: string;
@@ -1127,7 +1140,7 @@ async function handleSynthesisRecall(args: SynthesisRecallArgs) {
       node_type: NodeType;
     }> = [];
 
-    if (include_semantic_fallback && exactMatches.length < 3) {
+    if (include_semantic_fallback && exactMatches.length < semantic_fallback_threshold) {
       try {
         const queryEmbedding = await generateEmbedding(term);
         const exactIds = new Set(exactMatches.map((m) => m.id));

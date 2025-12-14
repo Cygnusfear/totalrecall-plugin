@@ -1157,6 +1157,104 @@ async function testSynthesisRecall() {
   console.log('Synthesis recall tests: PASS\n');
 }
 
+async function testNodeIdPrefixResolution() {
+  console.log('Test: Node ID prefix resolution...');
+  await cleanup();
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
+
+  // Create multiple nodes with known IDs (UUIDs are generated, but we can test prefix matching)
+  const node1 = await db.createNode({
+    node_type: 'learning',
+    one_liner: 'First test node',
+    summary: 'Testing prefix resolution',
+    full_synthesis: 'Full details',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'prefix-test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  const node2 = await db.createNode({
+    node_type: 'decision',
+    one_liner: 'Second test node',
+    summary: 'Another node for prefix test',
+    full_synthesis: 'Full details',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now() + 1000,
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'prefix-test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  // Test 1: Full ID lookup should return exactly that node
+  const fullIdResults = await db.queryNodesByIdPrefix(node1.id, 10);
+  if (fullIdResults.length !== 1) {
+    throw new Error(`Expected 1 result for full ID, got ${fullIdResults.length}`);
+  }
+  if (fullIdResults[0].id !== node1.id) {
+    throw new Error('Full ID lookup returned wrong node');
+  }
+  console.log('  - Full ID lookup: PASS');
+
+  // Test 2: Short prefix (first 8 chars) should find the node
+  const shortPrefix = node1.id.slice(0, 8);
+  const prefixResults = await db.queryNodesByIdPrefix(shortPrefix, 10);
+  if (prefixResults.length === 0) {
+    throw new Error(`Expected at least 1 result for prefix ${shortPrefix}`);
+  }
+  const foundNode = prefixResults.find((n) => n.id === node1.id);
+  if (!foundNode) {
+    throw new Error(`Node ${node1.id} not found with prefix ${shortPrefix}`);
+  }
+  console.log('  - Short prefix (8 chars) lookup: PASS');
+
+  // Test 3: Very short prefix (first 4 chars) works
+  const veryShortPrefix = node1.id.slice(0, 4);
+  const veryShortResults = await db.queryNodesByIdPrefix(veryShortPrefix, 10);
+  if (veryShortResults.length === 0) {
+    throw new Error(`Expected at least 1 result for very short prefix ${veryShortPrefix}`);
+  }
+  console.log('  - Very short prefix (4 chars) lookup: PASS');
+
+  // Test 4: Non-existent prefix returns empty
+  const noResults = await db.queryNodesByIdPrefix('zzzzzzzz-nonexistent', 10);
+  if (noResults.length !== 0) {
+    throw new Error('Expected 0 results for non-existent prefix');
+  }
+  console.log('  - Non-existent prefix returns empty: PASS');
+
+  // Test 5: Limit is respected
+  const limitedResults = await db.queryNodesByIdPrefix('', 1); // Empty prefix matches all
+  if (limitedResults.length > 1) {
+    throw new Error(`Limit not respected, got ${limitedResults.length} results`);
+  }
+  console.log('  - Limit parameter respected: PASS');
+
+  // Test 6: Special characters in prefix are escaped (SQL injection prevention)
+  const specialResults = await db.queryNodesByIdPrefix('%_', 10);
+  // Should return 0 results, not cause an error
+  if (specialResults.length !== 0) {
+    throw new Error('Special characters should be escaped');
+  }
+  console.log('  - Special character escaping: PASS');
+
+  await db.close();
+  console.log('Node ID prefix resolution tests: PASS\n');
+}
+
 async function testRelationshipBuilder() {
   console.log('Test: Relationship builder...');
   await cleanup();
@@ -1311,6 +1409,7 @@ async function main() {
     await testRawContentSearch();
     await testRawContentVectorSearch();
     await testSynthesisRecall();
+    await testNodeIdPrefixResolution();
     await testRelationshipBuilder();
 
     console.log('=== ALL TESTS PASSED ===');
