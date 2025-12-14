@@ -23,9 +23,16 @@ function getConfigDir(): string {
 
 /**
  * Get XDG data directory path (for SQLite database)
+ * Note: XDG spec says data goes in ~/.local/share, but we use ~/.config for backwards compatibility
+ * with existing Total Recall installations that store synthesis.sqlite in ~/.config/totalrecall
  */
 function getDataDir(): string {
-  return process.env.XDG_DATA_HOME || join(homedir(), '.config', 'totalrecall');
+  // Check XDG_DATA_HOME first for spec compliance
+  if (process.env.XDG_DATA_HOME) {
+    return join(process.env.XDG_DATA_HOME, 'totalrecall');
+  }
+  // Fall back to config dir for backwards compatibility with existing installations
+  return join(homedir(), '.config', 'totalrecall');
 }
 
 /**

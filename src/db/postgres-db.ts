@@ -66,8 +66,10 @@ export class PostgresSynthesisDatabase {
     });
 
     // Set VectorChord probes for this connection
+    // Note: We don't await here to avoid blocking constructor, but failures are logged
     this.setVectorChordProbes(this.probes).catch((err) => {
-      console.warn('Failed to set VectorChord probes:', err);
+      console.error('[PostgresDB] CRITICAL: Failed to set VectorChord probes:', err);
+      console.error('[PostgresDB] Vector search may return suboptimal results. Ensure VectorChord extension is installed.');
     });
   }
 
@@ -256,19 +258,37 @@ export class PostgresSynthesisDatabase {
     }
 
     const vectorStr = `[${queryEmbedding.join(',')}]`;
-    const results = await this.sql`
-      SELECT * FROM hybrid_search(
-        ${query},
-        ${vectorStr}::vector,
-        ${maxResults},
-        ${minScore},
-        ${weights.vector ?? 1.0},
-        ${weights.bm25 ?? 1.0},
-        ${weights.trigram ?? 0.5},
-        60
-      )
-      ${nodeTypes?.length ? this.sql`WHERE node_type = ANY(${nodeTypes})` : this.sql``}
-    `;
+    // Note: nodeTypes filtering is done inside hybrid_search function via subquery
+    // We wrap in a subquery to filter results after RRF scoring
+    const results = nodeTypes?.length
+      ? await this.sql`
+          SELECT * FROM (
+            SELECT * FROM hybrid_search(
+              ${query},
+              ${vectorStr}::vector,
+              ${maxResults * 2},
+              ${minScore},
+              ${weights.vector ?? 1.0},
+              ${weights.bm25 ?? 1.0},
+              ${weights.trigram ?? 0.5},
+              60
+            )
+          ) AS hs
+          WHERE node_type = ANY(${nodeTypes})
+          LIMIT ${maxResults}
+        `
+      : await this.sql`
+          SELECT * FROM hybrid_search(
+            ${query},
+            ${vectorStr}::vector,
+            ${maxResults},
+            ${minScore},
+            ${weights.vector ?? 1.0},
+            ${weights.bm25 ?? 1.0},
+            ${weights.trigram ?? 0.5},
+            60
+          )
+        `;
 
     return results.map((r) => ({
       node_id: r.node_id as string,

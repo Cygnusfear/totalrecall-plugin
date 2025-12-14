@@ -79,13 +79,27 @@ class PostgresPoolManager {
   }
 
   /**
-   * Execute a query with automatic connection handling
+   * Execute a raw SQL query with automatic connection handling
+   *
+   * ⚠️ SECURITY WARNING: This method uses `unsafe()` which does NOT escape parameters.
+   * Only use this for trusted SQL strings. NEVER pass user input directly.
+   * Prefer using the tagged template literal syntax via getPool() for safe queries.
+   *
+   * @deprecated Use getPool() with tagged template literals instead for safe queries
+   * @example
+   * // SAFE - use this instead:
+   * const pool = connectionPool.getPool();
+   * const results = await pool`SELECT * FROM users WHERE id = ${userId}`;
+   *
+   * // UNSAFE - avoid this:
+   * await connectionPool.query(`SELECT * FROM users WHERE id = ${userId}`);
    */
   async query<T = any>(
     sql: string,
     params: any[] = []
   ): Promise<any> {
     const pool = this.getPool();
+    // Note: unsafe() is required for dynamic SQL but caller must ensure params are sanitized
     return pool.unsafe(sql, params);
   }
 

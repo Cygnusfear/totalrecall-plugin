@@ -722,8 +722,10 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       UPDATE synthesis_queue
       SET status = 'pending', retry_count = retry_count + 1
       WHERE status = 'processing'
-        AND (started_at IS NOT NULL AND started_at < ?)
-        OR (started_at IS NULL AND created_at < ?)
+        AND (
+          (started_at IS NOT NULL AND started_at < ?)
+          OR (started_at IS NULL AND created_at < ?)
+        )
     `);
     const result = this.withRetry(() => stmt.run(cutoffTime, cutoffTime));
     return result.changes;
