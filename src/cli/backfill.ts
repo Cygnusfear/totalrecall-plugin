@@ -14,7 +14,7 @@ async function main() {
   const projectsDir = join(homedir(), '.claude', 'projects');
   if (!existsSync(projectsDir)) {
     console.log('No Claude projects directory found');
-    db.close();
+    await db.close();
     return;
   }
 
@@ -32,7 +32,7 @@ async function main() {
       const sessionId = file.replace('.jsonl', '');
 
       // Check if already processed
-      const existing = db.queryNodes({ session_id: sessionId, limit: 1 });
+      const existing = await db.queryNodes({ session_id: sessionId, limit: 1 });
       if (existing.length > 0) {
         skipped++;
         continue;
@@ -45,7 +45,7 @@ async function main() {
   }
 
   console.log(`\nBackfill complete: ${processed} to process, ${skipped} skipped`);
-  db.close();
+  await db.close();
 }
 
 main().catch((e) => {

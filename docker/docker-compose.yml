@@ -1,0 +1,45 @@
+# Total Recall v3 - VectorChord Suite Stack
+# Production-ready PostgreSQL with VectorChord, VectorChord-BM25, and pg_tokenizer.rs
+#
+# Usage:
+#   docker-compose up -d
+#   docker-compose logs -f vchord
+#
+# Verify extensions:
+#   docker exec -it totalrecall-vchord psql -U totalrecall -c '\dx'
+
+services:
+  vchord:
+    image: tensorchord/vchord-suite:pg17-latest
+    container_name: totalrecall-vchord
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-totalrecall}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-totalrecall}
+      POSTGRES_DB: ${POSTGRES_DB:-totalrecall}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - totalrecall-data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-totalrecall} -d ${POSTGRES_DB:-totalrecall}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    shm_size: 256mb
+    # Performance tuning for vector workloads
+    command: >
+      postgres
+      -c shared_preload_libraries=vchord.so,pg_tokenizer.so
+      -c shared_buffers=256MB
+      -c effective_cache_size=512MB
+      -c maintenance_work_mem=128MB
+      -c work_mem=16MB
+      -c max_parallel_workers_per_gather=2
+      -c max_parallel_workers=4
+
+volumes:
+  totalrecall-data:
+    name: totalrecall-vchord-data

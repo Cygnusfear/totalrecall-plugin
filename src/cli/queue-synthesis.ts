@@ -47,14 +47,14 @@ async function main() {
   const input = await readHookInput();
   if (!input || !input.transcript_path) {
     console.log('No hook input or transcript_path');
-    db.close();
+    await db.close();
     return;
   }
 
   const transcriptPath = input.transcript_path;
   if (!existsSync(transcriptPath)) {
     console.log('Transcript file does not exist:', transcriptPath);
-    db.close();
+    await db.close();
     return;
   }
 
@@ -66,7 +66,7 @@ async function main() {
 
   if (entries.length === 0) {
     console.log('No entries in transcript');
-    db.close();
+    await db.close();
     return;
   }
 
@@ -80,7 +80,7 @@ async function main() {
       const id = randomUUID();
       const contentText = extractText(entry.message.content);
 
-      db.createRawContent({
+      await db.createRawContent({
         id,
         session_id: sessionId,
         synthesis_node_id: null,
@@ -97,12 +97,12 @@ async function main() {
 
   if (rawContentIds.length === 0) {
     console.log('No messages to queue');
-    db.close();
+    await db.close();
     return;
   }
 
   // Create queue item for background synthesis
-  const queueItem = db.createSynthesisQueueItem({
+  const queueItem = await db.createSynthesisQueueItem({
     session_id: sessionId,
     agent_id: null,
     chunk_type: 'session_chunk',
@@ -117,7 +117,7 @@ async function main() {
   });
 
   console.log(`Queued ${rawContentIds.length} messages for synthesis (queue item ${queueItem.id})`);
-  db.close();
+  await db.close();
 }
 
 main().catch((e) => {

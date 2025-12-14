@@ -1,0 +1,14 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "Total Recall VectorChord",
+      "Group": "Development",
+      "Host": "vchord",
+      "Port": 5432,
+      "MaintenanceDB": "totalrecall",
+      "Username": "totalrecall",
+      "SSLMode": "prefer",
+      "PassFile": "/tmp/pgpassfile"
+    }
+  }
+}

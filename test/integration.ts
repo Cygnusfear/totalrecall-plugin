@@ -2,7 +2,7 @@
  * Integration tests for TotalRecall plugin
  */
 
-import { SynthesisDatabase } from '../src/db.js';
+import { createSQLiteDatabase, type ISynthesisDatabase } from '../src/db.js';
 import { generateEmbedding, initEmbeddings, generateSynthesisEmbedding } from '../src/embeddings.js';
 import { unlinkSync, existsSync } from 'fs';
 import { join } from 'path';
@@ -18,10 +18,10 @@ async function cleanup() {
 
 async function testDatabaseSchema() {
   console.log('Test: Database schema creation...');
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
 
   // Test node creation
-  const node = db.createNode({
+  const node = await db.createNode({
     node_type: 'learning',
     one_liner: 'Test learning',
     summary: 'This is a test summary',
@@ -43,7 +43,7 @@ async function testDatabaseSchema() {
   console.log('  - Node creation: PASS');
 
   // Test raw content
-  const raw = db.createRawContent({
+  const raw = await db.createRawContent({
     id: 'raw-1',
     session_id: 'test-session',
     synthesis_node_id: null,
@@ -58,7 +58,7 @@ async function testDatabaseSchema() {
   console.log('  - Raw content creation: PASS');
 
   // Test queue item
-  const queueItem = db.createSynthesisQueueItem({
+  const queueItem = await db.createSynthesisQueueItem({
     session_id: 'test-session',
     agent_id: null,
     chunk_type: 'session_chunk',
@@ -76,7 +76,7 @@ async function testDatabaseSchema() {
   console.log('  - Queue item creation: PASS');
 
   // Test progressive disclosure event
-  const pdEvent = db.createProgressiveDisclosureEvent({
+  const pdEvent = await db.createProgressiveDisclosureEvent({
     event_type: 'search',
     session_id: 'test-session',
     agent_id: null,
@@ -93,7 +93,7 @@ async function testDatabaseSchema() {
   if (!pdEvent.id) throw new Error('PD event creation failed');
   console.log('  - Progressive disclosure event: PASS');
 
-  db.close();
+  await db.close();
   console.log('Database schema tests: PASS\n');
 }
 
@@ -119,11 +119,11 @@ async function testEmbeddings() {
 async function testVectorSearch() {
   console.log('Test: Vector search...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
   await initEmbeddings();
 
   // Create nodes with embeddings
-  const node1 = db.createNode({
+  const node1 = await db.createNode({
     node_type: 'decision',
     one_liner: 'Use React for frontend',
     summary: 'Decided to use React for the frontend framework',
@@ -142,9 +142,9 @@ async function testVectorSearch() {
   });
 
   const emb1 = await generateSynthesisEmbedding(node1.one_liner, node1.summary, node1.node_type);
-  db.insertEmbedding(node1.id, emb1);
+  await db.insertEmbedding(node1.id, emb1);
 
-  const node2 = db.createNode({
+  const node2 = await db.createNode({
     node_type: 'learning',
     one_liner: 'SQLite WAL mode improves concurrency',
     summary: 'Learned that WAL mode helps with concurrent access',
@@ -163,11 +163,11 @@ async function testVectorSearch() {
   });
 
   const emb2 = await generateSynthesisEmbedding(node2.one_liner, node2.summary, node2.node_type);
-  db.insertEmbedding(node2.id, emb2);
+  await db.insertEmbedding(node2.id, emb2);
 
   // Search for React-related content
   const queryEmb = await generateEmbedding('React frontend framework');
-  const results = db.searchByVector(queryEmb, 5, 0.3);
+  const results = await db.searchByVector(queryEmb, 5, 0.3);
 
   if (results.length === 0) {
     throw new Error('Expected search results');
@@ -179,17 +179,17 @@ async function testVectorSearch() {
   }
   console.log('  - Vector search: PASS');
 
-  db.close();
+  await db.close();
   console.log('Vector search tests: PASS\n');
 }
 
 async function testQueueOperations() {
   console.log('Test: Queue operations...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
 
   // Create pending item
-  const item = db.createSynthesisQueueItem({
+  const item = await db.createSynthesisQueueItem({
     session_id: 'test-session',
     agent_id: null,
     chunk_type: 'session_chunk',
@@ -204,41 +204,41 @@ async function testQueueOperations() {
   });
 
   // Get pending items
-  const pending = db.getPendingSynthesisQueue({ limit: 10 });
+  const pending = await db.getPendingSynthesisQueue({ limit: 10 });
   if (pending.length !== 1) {
     throw new Error(`Expected 1 pending, got ${pending.length}`);
   }
   console.log('  - Get pending items: PASS');
 
   // Update status
-  db.updateSynthesisQueueStatus(item.id, 'processing');
-  const updated = db.getSynthesisQueueItems({ status: 'processing' });
+  await db.updateSynthesisQueueStatus(item.id, 'processing');
+  const updated = await db.getSynthesisQueueItems({ status: 'processing' });
   if (updated.length !== 1) {
     throw new Error('Status update failed');
   }
   console.log('  - Update status: PASS');
 
   // Increment retry
-  db.incrementSynthesisQueueRetry(item.id);
-  const retried = db.getSynthesisQueueItems({ status: 'pending' });
+  await db.incrementSynthesisQueueRetry(item.id);
+  const retried = await db.getSynthesisQueueItems({ status: 'pending' });
   if (retried[0].retry_count !== 1) {
     throw new Error('Retry increment failed');
   }
   console.log('  - Increment retry: PASS');
 
-  db.close();
+  await db.close();
   console.log('Queue operation tests: PASS\n');
 }
 
 async function testScoreCalculation() {
   console.log('Test: Score calculation (L2 to cosine conversion)...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
   await initEmbeddings();
 
   // Create a node with specific content
   const testContent = 'TypeScript compiler configuration for strict mode';
-  const node = db.createNode({
+  const node = await db.createNode({
     node_type: 'learning',
     one_liner: testContent,
     summary: 'Learning about TypeScript strict mode configuration',
@@ -257,11 +257,11 @@ async function testScoreCalculation() {
   });
 
   const embedding = await generateSynthesisEmbedding(node.one_liner, node.summary, node.node_type);
-  db.insertEmbedding(node.id, embedding);
+  await db.insertEmbedding(node.id, embedding);
 
   // Search for the exact content - should get high score
   const exactQuery = await generateEmbedding(testContent);
-  const exactResults = db.searchByVector(exactQuery, 5, 0.0); // No min_score filter
+  const exactResults = await db.searchByVector(exactQuery, 5, 0.0); // No min_score filter
 
   if (exactResults.length === 0) {
     throw new Error('Expected results for exact content search');
@@ -283,7 +283,7 @@ async function testScoreCalculation() {
 
   // Search for unrelated content - should get lower score
   const unrelatedQuery = await generateEmbedding('cooking recipes for Italian pasta');
-  const unrelatedResults = db.searchByVector(unrelatedQuery, 5, 0.0);
+  const unrelatedResults = await db.searchByVector(unrelatedQuery, 5, 0.0);
 
   if (unrelatedResults.length > 0) {
     const unrelatedScore = unrelatedResults[0].score;
@@ -297,26 +297,26 @@ async function testScoreCalculation() {
   }
 
   // Verify min_score filtering works correctly
-  const filteredResults = db.searchByVector(exactQuery, 5, 0.8);
+  const filteredResults = await db.searchByVector(exactQuery, 5, 0.8);
   const allPassThreshold = filteredResults.every(r => r.score >= 0.8);
   if (!allPassThreshold) {
     throw new Error('min_score filtering not working correctly');
   }
   console.log('  - min_score filtering: PASS');
 
-  db.close();
+  await db.close();
   console.log('Score calculation tests: PASS\n');
 }
 
 async function testEntityContextInEmbeddings() {
   console.log('Test: Entity context in embeddings (Issue #7 fix)...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
   await initEmbeddings();
 
   // Create a node about "Epic #183 backend migration" with entity_name "Jungle"
   // This simulates the issue: synthesis text doesn't mention "jungle" but entity_name does
-  const node = db.createNode({
+  const node = await db.createNode({
     node_type: 'task',
     one_liner: 'Epic #183 backend migration complete',
     summary: 'Completed the backend migration for Epic #183, moving services to new infrastructure',
@@ -345,11 +345,11 @@ async function testEntityContextInEmbeddings() {
       sourceRepo: node.source_repo,
     }
   );
-  db.insertEmbedding(node.id, embeddingWithContext);
+  await db.insertEmbedding(node.id, embeddingWithContext);
 
   // Search for "jungle" - should find the node even though "jungle" isn't in one_liner or summary
   const jungleQuery = await generateEmbedding('jungle project');
-  const jungleResults = db.searchByVector(jungleQuery, 5, 0.0);
+  const jungleResults = await db.searchByVector(jungleQuery, 5, 0.0);
 
   if (jungleResults.length === 0) {
     throw new Error('Expected to find node when searching for "jungle" (entity_name)');
@@ -360,7 +360,7 @@ async function testEntityContextInEmbeddings() {
 
   // Search for "Epic #183" - should also work via aliases
   const epicQuery = await generateEmbedding('Epic #183');
-  const epicResults = db.searchByVector(epicQuery, 5, 0.0);
+  const epicResults = await db.searchByVector(epicQuery, 5, 0.0);
 
   if (epicResults.length === 0) {
     throw new Error('Expected to find node when searching for "Epic #183" (alias)');
@@ -369,7 +369,7 @@ async function testEntityContextInEmbeddings() {
 
   // Search for "jungle-backend" - should work via source_repo
   const repoQuery = await generateEmbedding('jungle-backend repository');
-  const repoResults = db.searchByVector(repoQuery, 5, 0.0);
+  const repoResults = await db.searchByVector(repoQuery, 5, 0.0);
 
   if (repoResults.length === 0) {
     throw new Error('Expected to find node when searching for "jungle-backend" (source_repo)');
@@ -378,7 +378,7 @@ async function testEntityContextInEmbeddings() {
 
   // Compare: search for "backend migration" (in original text) should have good score
   const directQuery = await generateEmbedding('backend migration');
-  const directResults = db.searchByVector(directQuery, 5, 0.0);
+  const directResults = await db.searchByVector(directQuery, 5, 0.0);
 
   if (directResults.length === 0) {
     throw new Error('Expected to find node when searching for direct text');
@@ -393,19 +393,19 @@ async function testEntityContextInEmbeddings() {
     console.log(`  - Warning: "jungle" score ${jungleScore.toFixed(3)} is below 0.3 threshold`);
   }
 
-  db.close();
+  await db.close();
   console.log('Entity context in embeddings tests: PASS\n');
 }
 
 async function testProgressiveDisclosureAnalytics() {
   console.log('Test: Progressive disclosure analytics...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
 
   const now = Date.now();
 
   // Create events
-  db.createProgressiveDisclosureEvent({
+  await db.createProgressiveDisclosureEvent({
     event_type: 'search',
     session_id: 'test',
     agent_id: null,
@@ -419,7 +419,7 @@ async function testProgressiveDisclosureAnalytics() {
     message_tokens: null,
   });
 
-  db.createProgressiveDisclosureEvent({
+  await db.createProgressiveDisclosureEvent({
     event_type: 'inject',
     session_id: 'test',
     agent_id: null,
@@ -433,7 +433,7 @@ async function testProgressiveDisclosureAnalytics() {
     message_tokens: null,
   });
 
-  db.createProgressiveDisclosureEvent({
+  await db.createProgressiveDisclosureEvent({
     event_type: 'expand',
     session_id: 'test',
     agent_id: null,
@@ -447,7 +447,7 @@ async function testProgressiveDisclosureAnalytics() {
     message_tokens: null,
   });
 
-  const stats = db.getProgressiveDisclosureAnalytics(now - 1000, now + 1000);
+  const stats = await db.getProgressiveDisclosureAnalytics(now - 1000, now + 1000);
 
   if (stats.totalSearches !== 1) throw new Error('Search count wrong');
   if (stats.totalInjections !== 1) throw new Error('Injection count wrong');
@@ -457,17 +457,17 @@ async function testProgressiveDisclosureAnalytics() {
 
   console.log('  - Analytics calculation: PASS');
 
-  db.close();
+  await db.close();
   console.log('Progressive disclosure analytics tests: PASS\n');
 }
 
 async function testEdgeHelpers() {
   console.log('Test: Edge helper methods...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
 
   // Create two nodes
-  const node1 = db.createNode({
+  const node1 = await db.createNode({
     node_type: 'learning',
     one_liner: 'Test node 1',
     summary: 'Summary 1',
@@ -485,7 +485,7 @@ async function testEdgeHelpers() {
     source_repo: null,
   });
 
-  const node2 = db.createNode({
+  const node2 = await db.createNode({
     node_type: 'decision',
     one_liner: 'Test node 2',
     summary: 'Summary 2',
@@ -504,13 +504,13 @@ async function testEdgeHelpers() {
   });
 
   // Test edgeExists - should be false
-  if (db.edgeExists(node1.id, node2.id)) {
+  if (await db.edgeExists(node1.id, node2.id)) {
     throw new Error('edgeExists should return false for non-existent edge');
   }
   console.log('  - edgeExists (no edge): PASS');
 
   // Create an edge
-  db.createEdge({
+  await db.createEdge({
     from_node_id: node1.id,
     to_node_id: node2.id,
     edge_type: 'relates_to',
@@ -519,19 +519,19 @@ async function testEdgeHelpers() {
   });
 
   // Test edgeExists - should be true (forward direction)
-  if (!db.edgeExists(node1.id, node2.id)) {
+  if (!await db.edgeExists(node1.id, node2.id)) {
     throw new Error('edgeExists should return true for existing edge');
   }
   console.log('  - edgeExists (forward): PASS');
 
   // Test edgeExists - should be true (reverse direction check)
-  if (!db.edgeExists(node2.id, node1.id)) {
+  if (!await db.edgeExists(node2.id, node1.id)) {
     throw new Error('edgeExists should return true for reverse direction');
   }
   console.log('  - edgeExists (reverse): PASS');
 
   // Test getOrphanNodes
-  const node3 = db.createNode({
+  const node3 = await db.createNode({
     node_type: 'event',
     one_liner: 'Orphan node',
     summary: 'This node has no edges',
@@ -549,34 +549,34 @@ async function testEdgeHelpers() {
     source_repo: null,
   });
 
-  const orphans = db.getOrphanNodes();
+  const orphans = await db.getOrphanNodes();
   if (orphans.length !== 1 || orphans[0].id !== node3.id) {
     throw new Error(`Expected 1 orphan (node3), got ${orphans.length}`);
   }
   console.log('  - getOrphanNodes: PASS');
 
   // Test getOrphanNodes with node type filter
-  const orphansFiltered = db.getOrphanNodes(['decision']);
+  const orphansFiltered = await db.getOrphanNodes(['decision']);
   if (orphansFiltered.length !== 0) {
     throw new Error('Expected 0 orphans with decision filter');
   }
   console.log('  - getOrphanNodes (filtered): PASS');
 
-  db.close();
+  await db.close();
   console.log('Edge helper tests: PASS\n');
 }
 
 async function testRelationshipBuilder() {
   console.log('Test: Relationship builder...');
   await cleanup();
-  const db = new SynthesisDatabase(TEST_DB_PATH);
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
   await initEmbeddings();
 
   // Import dynamically to test
   const { RelationshipBuilder } = await import('../src/lib/relationship-builder.js');
 
   // Create 3 nodes - 2 with edges, 1 orphan
-  const node1 = db.createNode({
+  const node1 = await db.createNode({
     node_type: 'learning',
     one_liner: 'React hooks best practices',
     summary: 'Learned about useEffect cleanup and dependency arrays',
@@ -594,9 +594,9 @@ async function testRelationshipBuilder() {
     source_repo: null,
   });
   const emb1 = await generateSynthesisEmbedding(node1.one_liner, node1.summary, node1.node_type);
-  db.insertEmbedding(node1.id, emb1);
+  await db.insertEmbedding(node1.id, emb1);
 
-  const node2 = db.createNode({
+  const node2 = await db.createNode({
     node_type: 'decision',
     one_liner: 'Use React for frontend',
     summary: 'Decided to use React framework for the web application',
@@ -614,10 +614,10 @@ async function testRelationshipBuilder() {
     source_repo: null,
   });
   const emb2 = await generateSynthesisEmbedding(node2.one_liner, node2.summary, node2.node_type);
-  db.insertEmbedding(node2.id, emb2);
+  await db.insertEmbedding(node2.id, emb2);
 
   // Create edge between node1 and node2
-  db.createEdge({
+  await db.createEdge({
     from_node_id: node1.id,
     to_node_id: node2.id,
     edge_type: 'relates_to',
@@ -626,7 +626,7 @@ async function testRelationshipBuilder() {
   });
 
   // Orphan node (related to React but no edges)
-  const orphan = db.createNode({
+  const orphan = await db.createNode({
     node_type: 'learning',
     one_liner: 'React state management patterns',
     summary: 'Patterns for managing state in React applications',
@@ -644,10 +644,10 @@ async function testRelationshipBuilder() {
     source_repo: null,
   });
   const embOrphan = await generateSynthesisEmbedding(orphan.one_liner, orphan.summary, orphan.node_type);
-  db.insertEmbedding(orphan.id, embOrphan);
+  await db.insertEmbedding(orphan.id, embOrphan);
 
   // Verify orphan exists
-  const orphansBefore = db.getOrphanNodes();
+  const orphansBefore = await db.getOrphanNodes();
   if (orphansBefore.length !== 1) {
     throw new Error(`Expected 1 orphan before rebuild, got ${orphansBefore.length}`);
   }
@@ -669,7 +669,7 @@ async function testRelationshipBuilder() {
   console.log(`  - Dry run found ${dryRunStats.edgesCreated} potential edges: PASS`);
 
   // Verify no edges were actually created (dry run)
-  const orphansAfterDry = db.getOrphanNodes();
+  const orphansAfterDry = await db.getOrphanNodes();
   if (orphansAfterDry.length !== 1) {
     throw new Error('Dry run should not create edges');
   }
@@ -691,13 +691,13 @@ async function testRelationshipBuilder() {
   console.log(`  - Real rebuild created ${realStats.edgesCreated} edges: PASS`);
 
   // Verify orphan is now connected
-  const orphansAfter = db.getOrphanNodes();
+  const orphansAfter = await db.getOrphanNodes();
   if (orphansAfter.length !== 0) {
     throw new Error(`Expected 0 orphans after rebuild, got ${orphansAfter.length}`);
   }
   console.log('  - Orphan now connected: PASS');
 
-  db.close();
+  await db.close();
   console.log('Relationship builder tests: PASS\n');
 }
 

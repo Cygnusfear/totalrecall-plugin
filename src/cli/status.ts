@@ -8,9 +8,9 @@ import { getDatabase } from '../db.js';
 async function main() {
   const db = getDatabase();
 
-  const nodes = db.queryNodes({ limit: 10000 });
-  const queueItems = db.getSynthesisQueueItems({ limit: 1000 });
-  const orphans = db.getOrphanNodes();
+  const nodes = await db.queryNodes({ limit: 10000 });
+  const queueItems = await db.getSynthesisQueueItems({ limit: 1000 });
+  const orphans = await db.getOrphanNodes();
 
   const pending = queueItems.filter((i) => i.status === 'pending').length;
   const processing = queueItems.filter((i) => i.status === 'processing').length;
@@ -20,7 +20,7 @@ async function main() {
   // Count edges (approximate via edge count on nodes)
   let totalEdges = 0;
   for (const node of nodes.slice(0, 100)) {
-    totalEdges += db.getEdgeCount(node.id);
+    totalEdges += await db.getEdgeCount(node.id);
   }
   // Edges are counted twice (from and to), so divide
   const estimatedEdges = Math.round((totalEdges / 100) * nodes.length / 2);
@@ -49,7 +49,7 @@ async function main() {
   console.log('');
   console.log(`Worker: ${process.env.ANTHROPIC_API_KEY ? 'Enabled' : 'Disabled (no API key)'}`);
 
-  db.close();
+  await db.close();
 }
 
 main().catch((e) => {

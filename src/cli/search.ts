@@ -19,14 +19,14 @@ async function main() {
   await initEmbeddings();
 
   const embedding = await generateEmbedding(query);
-  const results = db.searchByVector(embedding, 5, 0.3);
+  const results = await db.searchByVector(embedding, 5, 0.3);
 
   for (const r of results) {
     const pct = Math.round(r.score * 100);
     console.log(`[${r.node_type}] ${pct}% - ${r.one_liner}`);
   }
 
-  db.close();
+  await db.close();
 }
 
 main().catch((e) => {

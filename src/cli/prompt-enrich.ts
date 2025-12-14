@@ -54,8 +54,8 @@ async function main() {
 
     // Search for relevant synthesis nodes
     const db = getDatabase();
-    const results = db.searchByVector(queryEmbedding, MAX_RESULTS, MIN_SCORE);
-    db.close();
+    const results = await db.searchByVector(queryEmbedding, MAX_RESULTS, MIN_SCORE);
+    await db.close();
 
     if (results.length === 0) {
       // No relevant context found - don't inject noise

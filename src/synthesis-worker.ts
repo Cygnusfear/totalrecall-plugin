@@ -106,7 +106,7 @@ export class SynthesisWorker {
   private async processNextBatch(): Promise<void> {
     // Fetch batchSize items but process with bounded concurrency via semaphore
     // This prevents memory exhaustion from 100+ concurrent CLI processes
-    const items = this.db.getPendingSynthesisQueue({ limit: this.batchSize });
+    const items = await this.db.getPendingSynthesisQueue({ limit: this.batchSize });
 
     if (items.length === 0) {
       return;
@@ -139,11 +139,11 @@ export class SynthesisWorker {
       `[SynthesisWorker] Processing queue item ${item.id} (session: ${item.session_id})`
     );
 
-    this.db.updateSynthesisQueueStatus(item.id, 'processing');
+    await this.db.updateSynthesisQueueStatus(item.id, 'processing');
 
     try {
       const rawContentIds: string[] = JSON.parse(item.raw_content_ids);
-      const rawContent = this.db.getRawContentByIds(rawContentIds);
+      const rawContent = await this.db.getRawContentByIds(rawContentIds);
 
       if (rawContent.length === 0) {
         throw new Error('No raw content found for synthesis');
@@ -152,7 +152,7 @@ export class SynthesisWorker {
       const alreadySynthesized = rawContent.filter((rc) => rc.synthesis_node_id !== null);
       if (alreadySynthesized.length === rawContent.length) {
         console.log(`[SynthesisWorker] Content already synthesized for item ${item.id}`);
-        this.db.updateSynthesisQueueStatus(item.id, 'completed');
+        await this.db.updateSynthesisQueueStatus(item.id, 'completed');
         return;
       }
 
@@ -173,7 +173,7 @@ export class SynthesisWorker {
       const synthesis = await this.llmClient.synthesize(chunks, context);
 
       const now = Date.now();
-      const node = this.db.createNode({
+      const node = await this.db.createNode({
         node_type: synthesis.node_type,
         one_liner: synthesis.one_liner,
         summary: synthesis.summary,
@@ -202,7 +202,7 @@ export class SynthesisWorker {
             entityName: synthesis.entity_name,
           }
         );
-        this.db.insertEmbedding(node.id, embedding);
+        await this.db.insertEmbedding(node.id, embedding);
       } catch (e) {
         console.error('[SynthesisWorker] Failed to generate embedding:', e);
       }
@@ -218,8 +218,8 @@ export class SynthesisWorker {
         }
       }
 
-      this.db.linkRawContentToSynthesis(rawContentIds, node.id);
-      this.db.updateSynthesisQueueStatus(item.id, 'completed', node.id);
+      await this.db.linkRawContentToSynthesis(rawContentIds, node.id);
+      await this.db.updateSynthesisQueueStatus(item.id, 'completed', node.id);
 
       console.log(`[SynthesisWorker] Queue item ${item.id} completed`);
     } catch (error) {
@@ -228,10 +228,10 @@ export class SynthesisWorker {
 
       if (item.retry_count < this.maxRetries) {
         console.log(`[SynthesisWorker] Retrying item ${item.id}`);
-        this.db.incrementSynthesisQueueRetry(item.id);
+        await this.db.incrementSynthesisQueueRetry(item.id);
       } else {
         console.error(`[SynthesisWorker] Item ${item.id} failed after ${this.maxRetries} retries`);
-        this.db.updateSynthesisQueueStatus(item.id, 'failed', null, errorMessage);
+        await this.db.updateSynthesisQueueStatus(item.id, 'failed', null, errorMessage);
       }
 
       throw error;
@@ -249,7 +249,7 @@ export class SynthesisWorker {
     const { minSimilarity, maxEdges, useLLM } = AUTO_RELATIONSHIP_CONFIG;
 
     // Find similar nodes
-    const candidates = this.db.searchByVector(embedding, maxEdges * 2, minSimilarity);
+    const candidates = await this.db.searchByVector(embedding, maxEdges * 2, minSimilarity);
 
     let edgesCreated = 0;
 
@@ -258,9 +258,9 @@ export class SynthesisWorker {
       if (candidate.node_id === node.id) continue;
 
       // Skip if edge already exists
-      if (this.db.edgeExists(node.id, candidate.node_id)) continue;
+      if (await this.db.edgeExists(node.id, candidate.node_id)) continue;
 
-      const targetNode = this.db.getNode(candidate.node_id);
+      const targetNode = await this.db.getNode(candidate.node_id);
       if (!targetNode) continue;
 
       let edgeType: EdgeType = 'relates_to';
@@ -308,7 +308,7 @@ export class SynthesisWorker {
       }
 
       // Create the edge
-      this.db.createEdge({
+      await this.db.createEdge({
         from_node_id: node.id,
         to_node_id: candidate.node_id,
         edge_type: edgeType,
