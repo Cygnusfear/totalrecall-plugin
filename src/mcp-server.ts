@@ -361,7 +361,7 @@ async function handleSynthesisCreate(args: SynthesisCreateArgs) {
   const now = Date.now();
 
   // Create the node
-  const node = db.createNode({
+  const node = await db.createNode({
     node_type: args.node_type,
     one_liner: args.one_liner,
     summary: args.summary,
@@ -391,7 +391,7 @@ async function handleSynthesisCreate(args: SynthesisCreateArgs) {
         sourceRepo: args.source_repo,
       }
     );
-    db.insertEmbedding(node.id, embedding);
+    await db.insertEmbedding(node.id, embedding);
   } catch (e) {
     console.error('Failed to generate embedding:', e);
     // Continue without embedding - search will be limited but node is created
@@ -401,7 +401,7 @@ async function handleSynthesisCreate(args: SynthesisCreateArgs) {
   const createdEdges: Array<{ to_node_id: string; edge_type: EdgeType }> = [];
   if (args.related_node_ids && args.related_node_ids.length > 0) {
     for (const nodeId of args.related_node_ids) {
-      const exists = db.getNode(nodeId);
+      const exists = await db.getNode(nodeId);
       if (!exists) {
         return {
           error: 'Invalid related node',
@@ -418,7 +418,7 @@ async function handleSynthesisCreate(args: SynthesisCreateArgs) {
       const toNodeId = args.related_node_ids[i];
       const edgeType = edgeTypesList[i] || 'relates_to';
 
-      db.createEdge({
+      await db.createEdge({
         from_node_id: node.id,
         to_node_id: toNodeId,
         edge_type: edgeType as EdgeType,
@@ -456,7 +456,7 @@ async function handleSynthesisSearch(args: SynthesisSearchArgs) {
     const queryEmbedding = await generateEmbedding(query);
 
     // Search using sqlite-vec (over-fetch to account for date filtering)
-    let results = db.searchByVector(queryEmbedding, max_results * 2, min_score, node_types);
+    let results = await db.searchByVector(queryEmbedding, max_results * 2, min_score, node_types);
 
     // Apply date filters
     if (after || before) {
@@ -475,7 +475,7 @@ async function handleSynthesisSearch(args: SynthesisSearchArgs) {
 
     // Log search event for analytics
     try {
-      db.createProgressiveDisclosureEvent({
+      await db.createProgressiveDisclosureEvent({
         event_type: 'search',
         session_id: null,
         agent_id: null,
@@ -526,7 +526,7 @@ interface SynthesisUnfoldArgs {
 async function handleSynthesisUnfold(args: SynthesisUnfoldArgs) {
   const { node_id, depth = 'summary' } = args;
 
-  const node = db.getNode(node_id);
+  const node = await db.getNode(node_id);
   if (!node) {
     return {
       error: 'Node not found',
@@ -536,10 +536,10 @@ async function handleSynthesisUnfold(args: SynthesisUnfoldArgs) {
   }
 
   // Track access
-  db.updateNodeAccess(node_id);
+  await db.updateNodeAccess(node_id);
 
   // Get related nodes
-  const related = db.getRelatedNodes(node_id);
+  const related = await db.getRelatedNodes(node_id);
   const related_nodes = related.map(({ node: relatedNode, edge }) => ({
     node_id: relatedNode.id,
     one_liner: relatedNode.one_liner,
@@ -604,14 +604,14 @@ async function handleSynthesisGetContext(args: SynthesisGetContextArgs) {
     // If task_context provided, do semantic search; otherwise use recency
     if (task_context) {
       const queryEmbedding = await generateEmbedding(task_context);
-      const searchResults = db.searchByVector(queryEmbedding, max_nodes, 0.3);
+      const searchResults = await db.searchByVector(queryEmbedding, max_nodes, 0.3);
 
       // Fetch full nodes for search results
-      syntheses = searchResults
-        .map((r) => db.getNode(r.node_id))
-        .filter((n): n is NonNullable<typeof n> => n !== undefined);
+      syntheses = (await Promise.all(
+        searchResults.map((r) => db.getNode(r.node_id))
+      )).filter((n): n is NonNullable<typeof n> => n !== undefined);
     } else {
-      syntheses = db.queryNodes({
+      syntheses = await db.queryNodes({
         session_id,
         limit: max_nodes,
         order_by: 'last_updated',
@@ -623,7 +623,7 @@ async function handleSynthesisGetContext(args: SynthesisGetContextArgs) {
 
     if (include_related && syntheses.length > 0) {
       for (const node of syntheses.slice(0, 3)) {
-        const related = db.getRelatedNodes(node.id);
+        const related = await db.getRelatedNodes(node.id);
         for (const { node: relatedNode, edge } of related) {
           unfoldable_refs.push({
             node_id: relatedNode.id,
@@ -702,12 +702,12 @@ async function handleSessionGraft(args: SessionGraftArgs) {
     let relevant_syntheses;
     if (task_context) {
       const queryEmbedding = await generateEmbedding(task_context);
-      const searchResults = db.searchByVector(queryEmbedding, 10, 0.3);
-      relevant_syntheses = searchResults
-        .map((r) => db.getNode(r.node_id))
-        .filter((n): n is NonNullable<typeof n> => n !== undefined);
+      const searchResults = await db.searchByVector(queryEmbedding, 10, 0.3);
+      relevant_syntheses = (await Promise.all(
+        searchResults.map((r) => db.getNode(r.node_id))
+      )).filter((n): n is NonNullable<typeof n> => n !== undefined);
     } else {
-      relevant_syntheses = db.queryNodes({
+      relevant_syntheses = await db.queryNodes({
         limit: 10,
         order_by: 'last_updated',
       });
@@ -770,7 +770,7 @@ async function handleSynthesisCaptureChunk(args: SynthesisCaptureChunkArgs) {
       };
     }
 
-    const queueItem = db.createSynthesisQueueItem({
+    const queueItem = await db.createSynthesisQueueItem({
       session_id,
       agent_id: agent_id ?? null,
       chunk_type,
@@ -819,11 +819,11 @@ async function handleSynthesisQueueStatus(args: SynthesisQueueStatusArgs) {
     if (session_id) filters.session_id = session_id;
     if (status) filters.status = status;
 
-    const items = db.getSynthesisQueueItems(filters);
+    const items = await db.getSynthesisQueueItems(filters);
 
     // Calculate stats
     const allItems = session_id
-      ? db.getSynthesisQueueItems({ session_id, limit: 1000 })
+      ? await db.getSynthesisQueueItems({ session_id, limit: 1000 })
       : items;
 
     const stats = {
@@ -874,7 +874,7 @@ async function handleProgressiveDisclosureStats(args: ProgressiveDisclosureStats
   const startTime = now - hours * 60 * 60 * 1000;
 
   try {
-    const stats = db.getProgressiveDisclosureAnalytics(startTime, now);
+    const stats = await db.getProgressiveDisclosureAnalytics(startTime, now);
 
     const contextSavings =
       stats.totalInjectionTokens > 0

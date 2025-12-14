@@ -87,7 +87,7 @@ export class RelationshipBuilder {
       backupPath: null,
     };
 
-    const orphans = this.db.getOrphanNodes();
+    const orphans = await this.db.getOrphanNodes();
 
     if (this.config.verbose) {
       console.log(`Found ${orphans.length} orphan nodes`);
@@ -147,7 +147,7 @@ export class RelationshipBuilder {
       backupPath: null,
     };
 
-    const allNodes = this.db.queryNodes({ limit: 10000, order_by: 'created_at' });
+    const allNodes = await this.db.queryNodes({ limit: 10000, order_by: 'created_at' });
 
     if (this.config.verbose) {
       console.log(`Processing ${allNodes.length} total nodes`);
@@ -200,7 +200,7 @@ export class RelationshipBuilder {
       backupPath: null,
     };
 
-    const sessionNodes = this.db.getNodesBySession(sessionId);
+    const sessionNodes = await this.db.getNodesBySession(sessionId);
 
     if (this.config.verbose) {
       console.log(`Processing ${sessionNodes.length} nodes in session ${sessionId}`);
@@ -219,7 +219,7 @@ export class RelationshipBuilder {
 
     // Phase 3: Semantic similarity for remaining orphans
     for (const node of sessionNodes) {
-      const edgeCount = this.db.getEdgeCount(node.id);
+      const edgeCount = await this.db.getEdgeCount(node.id);
       if (edgeCount === 0) {
         try {
           await this.createEdgesForNode(node, stats);
@@ -256,7 +256,7 @@ export class RelationshipBuilder {
     );
 
     // Search for similar nodes (candidates)
-    const candidates = this.db.searchByVector(
+    const candidates = await this.db.searchByVector(
       embedding,
       this.config.maxEdgesPerNode * 3, // Over-fetch for filtering
       this.config.minSimilarity
@@ -269,12 +269,12 @@ export class RelationshipBuilder {
       if (candidate.node_id === node.id) continue;
 
       // Check for existing edge
-      if (this.db.edgeExists(node.id, candidate.node_id)) {
+      if (await this.db.edgeExists(node.id, candidate.node_id)) {
         stats.duplicatesSkipped++;
         continue;
       }
 
-      const targetNode = this.db.getNode(candidate.node_id);
+      const targetNode = await this.db.getNode(candidate.node_id);
       if (!targetNode) continue;
 
       // Determine edge type - use LLM if enabled, otherwise heuristics
@@ -337,7 +337,7 @@ export class RelationshipBuilder {
       }
 
       if (!this.config.dryRun) {
-        this.db.createEdge({
+        await this.db.createEdge({
           from_node_id: node.id,
           to_node_id: candidate.node_id,
           edge_type: edgeType,
@@ -376,7 +376,7 @@ export class RelationshipBuilder {
       );
 
       for (const child of children.slice(0, 10)) { // Limit to 10 children
-        if (this.db.edgeExists(summary.id, child.id)) {
+        if (await this.db.edgeExists(summary.id, child.id)) {
           stats.duplicatesSkipped++;
           continue;
         }
@@ -386,7 +386,7 @@ export class RelationshipBuilder {
         }
 
         if (!this.config.dryRun) {
-          this.db.createEdge({
+          await this.db.createEdge({
             from_node_id: summary.id,
             to_node_id: child.id,
             edge_type: 'contains',
@@ -419,7 +419,7 @@ export class RelationshipBuilder {
       if (timeDiff > 5 * 60 * 1000) continue;
 
       // Skip if already connected
-      if (this.db.edgeExists(current.id, next.id)) {
+      if (await this.db.edgeExists(current.id, next.id)) {
         stats.duplicatesSkipped++;
         continue;
       }
@@ -434,7 +434,7 @@ export class RelationshipBuilder {
       }
 
       if (!this.config.dryRun) {
-        this.db.createEdge({
+        await this.db.createEdge({
           from_node_id: current.id,
           to_node_id: next.id,
           edge_type: 'preceded',

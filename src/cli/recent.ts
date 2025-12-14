@@ -11,7 +11,7 @@ async function main() {
   const format = args.find((a) => a.startsWith('--format='))?.split('=')[1] || 'text';
 
   const db = getDatabase();
-  const nodes = db.queryNodes({ limit, order_by: 'last_updated' });
+  const nodes = await db.queryNodes({ limit, order_by: 'last_updated' });
 
   if (format === 'json') {
     console.log(JSON.stringify(nodes, null, 2));
@@ -21,7 +21,7 @@ async function main() {
     }
   }
 
-  db.close();
+  await db.close();
 }
 
 main().catch((e) => {

@@ -105,39 +105,39 @@ export interface ISynthesisDatabase {
    */
   createNode(
     node: Omit<SynthesisNode, 'id' | 'created_at' | 'updated_at' | 'access_count' | 'last_accessed'>
-  ): SynthesisNode;
+  ): Promise<SynthesisNode>;
 
   /**
    * Get a node by ID
    */
-  getNode(id: string): SynthesisNode | undefined;
+  getNode(id: string): Promise<SynthesisNode | undefined>;
 
   /**
    * Query nodes with filters
    */
-  queryNodes(filters: NodeQueryFilters): SynthesisNode[];
+  queryNodes(filters: NodeQueryFilters): Promise<SynthesisNode[]>;
 
   /**
    * Update node access count and timestamp
    */
-  updateNodeAccess(nodeId: string): void;
+  updateNodeAccess(nodeId: string): Promise<void>;
 
   /**
    * Get nodes by session ID
    */
-  getNodesBySession(sessionId: string): SynthesisNode[];
+  getNodesBySession(sessionId: string): Promise<SynthesisNode[]>;
 
   /**
    * Get all unique session IDs
    */
-  getAllSessionIds(): string[];
+  getAllSessionIds(): Promise<string[]>;
 
   // ============ Vector Operations ============
 
   /**
    * Insert or update embedding for a node
    */
-  insertEmbedding(nodeId: string, embedding: number[]): void;
+  insertEmbedding(nodeId: string, embedding: number[]): Promise<void>;
 
   /**
    * Search nodes by vector similarity
@@ -147,61 +147,61 @@ export interface ISynthesisDatabase {
     limit: number,
     minScore: number,
     nodeTypes?: NodeType[]
-  ): SearchResult[];
+  ): Promise<SearchResult[]>;
 
   // ============ Edge Operations ============
 
   /**
    * Create a new edge between nodes
    */
-  createEdge(edge: Omit<SynthesisEdge, 'id' | 'created_at'>): SynthesisEdge;
+  createEdge(edge: Omit<SynthesisEdge, 'id' | 'created_at'>): Promise<SynthesisEdge>;
 
   /**
    * Check if edge exists between two nodes (in either direction)
    */
-  edgeExists(nodeId1: string, nodeId2: string): boolean;
+  edgeExists(nodeId1: string, nodeId2: string): Promise<boolean>;
 
   /**
    * Get orphan nodes (nodes with no edges)
    */
-  getOrphanNodes(nodeTypes?: NodeType[]): SynthesisNode[];
+  getOrphanNodes(nodeTypes?: NodeType[]): Promise<SynthesisNode[]>;
 
   /**
    * Get edge count for a node
    */
-  getEdgeCount(nodeId: string): number;
+  getEdgeCount(nodeId: string): Promise<number>;
 
   /**
    * Get related nodes with their edges
    */
-  getRelatedNodes(nodeId: string): RelatedNode[];
+  getRelatedNodes(nodeId: string): Promise<RelatedNode[]>;
 
   // ============ Raw Content Operations ============
 
   /**
    * Create raw content record
    */
-  createRawContent(content: Omit<RawContent, 'created_at'>): RawContent;
+  createRawContent(content: Omit<RawContent, 'created_at'>): Promise<RawContent>;
 
   /**
    * Get raw content by session
    */
-  getRawContentBySession(sessionId: string, limit?: number): RawContent[];
+  getRawContentBySession(sessionId: string, limit?: number): Promise<RawContent[]>;
 
   /**
    * Get raw content by synthesis node
    */
-  getRawContentBySynthesis(synthesisNodeId: string): RawContent[];
+  getRawContentBySynthesis(synthesisNodeId: string): Promise<RawContent[]>;
 
   /**
    * Get raw content by IDs
    */
-  getRawContentByIds(ids: string[]): RawContent[];
+  getRawContentByIds(ids: string[]): Promise<RawContent[]>;
 
   /**
    * Link raw content to synthesis node
    */
-  linkRawContentToSynthesis(rawContentIds: string[], synthesisNodeId: string): void;
+  linkRawContentToSynthesis(rawContentIds: string[], synthesisNodeId: string): Promise<void>;
 
   // ============ Synthesis Queue Operations ============
 
@@ -210,17 +210,17 @@ export interface ISynthesisDatabase {
    */
   createSynthesisQueueItem(
     item: Omit<SynthesisQueue, 'id' | 'started_at' | 'completed_at'>
-  ): SynthesisQueue;
+  ): Promise<SynthesisQueue>;
 
   /**
    * Get pending synthesis queue items
    */
-  getPendingSynthesisQueue(filters?: { limit?: number }): SynthesisQueue[];
+  getPendingSynthesisQueue(filters?: { limit?: number }): Promise<SynthesisQueue[]>;
 
   /**
    * Get synthesis queue items with filters
    */
-  getSynthesisQueueItems(filters: SynthesisQueueFilters): SynthesisQueue[];
+  getSynthesisQueueItems(filters: SynthesisQueueFilters): Promise<SynthesisQueue[]>;
 
   /**
    * Update synthesis queue item status
@@ -230,22 +230,22 @@ export interface ISynthesisDatabase {
     status: SynthesisQueueStatus,
     synthesisNodeId?: string | null,
     error?: string | null
-  ): void;
+  ): Promise<void>;
 
   /**
    * Increment retry count for queue item
    */
-  incrementSynthesisQueueRetry(id: number): void;
+  incrementSynthesisQueueRetry(id: number): Promise<void>;
 
   /**
    * Reset stuck synthesis items
    */
-  resetStuckSynthesisItems(timeoutMs: number): number;
+  resetStuckSynthesisItems(timeoutMs: number): Promise<number>;
 
   /**
    * Get queue statistics
    */
-  getQueueStats(): QueueStats;
+  getQueueStats(): Promise<QueueStats>;
 
   // ============ Progressive Disclosure Operations ============
 
@@ -254,7 +254,7 @@ export interface ISynthesisDatabase {
    */
   createProgressiveDisclosureEvent(
     event: Omit<ProgressiveDisclosureEvent, 'id' | 'created_at'>
-  ): ProgressiveDisclosureEvent;
+  ): Promise<ProgressiveDisclosureEvent>;
 
   /**
    * Get progressive disclosure analytics
@@ -262,7 +262,7 @@ export interface ISynthesisDatabase {
   getProgressiveDisclosureAnalytics(
     startTime: number,
     endTime: number
-  ): ProgressiveDisclosureAnalytics;
+  ): Promise<ProgressiveDisclosureAnalytics>;
 
   // ============ Hybrid Search (PostgreSQL only) ============
 
@@ -270,12 +270,12 @@ export interface ISynthesisDatabase {
    * Perform hybrid search combining vector, BM25, and trigram
    * Falls back to vector-only for SQLite
    */
-  hybridSearch?(options: HybridSearchOptions): HybridSearchResult[];
+  hybridSearch?(options: HybridSearchOptions): Promise<HybridSearchResult[]>;
 
   /**
    * Search by BM25 keyword ranking (PostgreSQL only)
    */
-  searchByBM25?(query: string, limit: number): SearchResult[];
+  searchByBM25?(query: string, limit: number): Promise<SearchResult[]>;
 
   /**
    * Search by trigram similarity (PostgreSQL only)
@@ -284,14 +284,14 @@ export interface ISynthesisDatabase {
     query: string,
     limit: number,
     threshold?: number
-  ): SearchResult[];
+  ): Promise<SearchResult[]>;
 
   // ============ Utility ============
 
   /**
    * Close database connection
    */
-  close(): void;
+  close(): Promise<void>;
 
   /**
    * Get backend type

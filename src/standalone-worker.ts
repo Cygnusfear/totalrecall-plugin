@@ -50,7 +50,7 @@ async function shutdown(signal: string): Promise<void> {
   }
 
   if (db) {
-    db.close();
+    await db.close();
     db = null;
   }
 
@@ -83,7 +83,7 @@ async function main(): Promise<void> {
   }
 
   // Reset stuck items
-  const recovered = db.resetStuckSynthesisItems(config.stuckTimeout);
+  const recovered = await db.resetStuckSynthesisItems(config.stuckTimeout);
   if (recovered > 0) {
     console.log(`Recovered ${recovered} stuck synthesis items`);
   }

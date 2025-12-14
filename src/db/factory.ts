@@ -6,8 +6,7 @@
 import { getConfig, type TotalRecallConfig } from '../config/index.js';
 import type { ISynthesisDatabase } from './interface.js';
 import { SQLiteSynthesisDatabase } from './sqlite-db.js';
-// PostgreSQL implementation is async and not yet fully integrated
-// import { PostgresSynthesisDatabase } from './postgres-db.js';
+import { PostgresSynthesisDatabase } from './postgres-db.js';
 
 /**
  * Singleton database instance
@@ -21,26 +20,19 @@ export function createDatabase(config?: TotalRecallConfig): ISynthesisDatabase {
   const cfg = config || getConfig();
 
   if (cfg.dbBackend === 'postgres') {
-    throw new Error(
-      'PostgreSQL backend is not yet fully implemented. ' +
-      'The async PostgreSQL implementation exists but requires the application to be updated for async/await support. ' +
-      'SQLite is currently the only supported backend. ' +
-      'Track https://github.com/Cygnusfear/totalrecall-plugin/issues for PostgreSQL support progress.'
-    );
-    // TODO: Complete PostgreSQL implementation in future Epic
-    // if (!cfg.postgresUrl) {
-    //   throw new Error(
-    //     'PostgreSQL backend selected but TOTALRECALL_PG_URL or DATABASE_URL not configured'
-    //   );
-    // }
-    // return new PostgresSynthesisDatabase({
-    //   connectionString: cfg.postgresUrl,
-    //   poolSize: cfg.postgresPoolSize,
-    //   poolTimeout: cfg.postgresPoolTimeout,
-    //   connectionTimeout: cfg.postgresConnectionTimeout,
-    //   vectorchordProbes: cfg.vectorchordProbes,
-    //   vectorDimension: cfg.vectorchordDimension,
-    //   });
+    if (!cfg.postgresUrl) {
+      throw new Error(
+        'PostgreSQL backend selected but TOTALRECALL_PG_URL or DATABASE_URL not configured'
+      );
+    }
+    return new PostgresSynthesisDatabase({
+      connectionString: cfg.postgresUrl,
+      poolSize: cfg.postgresPoolSize,
+      poolTimeout: cfg.postgresPoolTimeout,
+      connectionTimeout: cfg.postgresConnectionTimeout,
+      vectorchordProbes: cfg.vectorchordProbes,
+      vectorDimension: cfg.vectorchordDimension,
+    });
   }
 
   // Default: SQLite
@@ -65,9 +57,9 @@ export function getDatabase(): ISynthesisDatabase {
 /**
  * Reset database singleton (for testing)
  */
-export function resetDatabase(): void {
+export async function resetDatabase(): Promise<void> {
   if (_db !== null) {
-    _db.close();
+    await _db.close();
     _db = null;
   }
 }
@@ -86,17 +78,15 @@ export function getDatabaseWithBackend(
   }
 ): ISynthesisDatabase {
   if (backend === 'postgres') {
-    throw new Error('PostgreSQL backend not yet supported - use SQLite for now');
-    // TODO: Enable when async support is complete
-    // if (!options.postgresUrl) {
-    //   throw new Error('PostgreSQL URL required for postgres backend');
-    // }
-    // return new PostgresSynthesisDatabase({
-    //   connectionString: options.postgresUrl,
-    //   poolSize: options.poolSize,
-    //   vectorchordProbes: options.vectorchordProbes,
-    //   vectorDimension: options.vectorDimension,
-    // });
+    if (!options.postgresUrl) {
+      throw new Error('PostgreSQL URL required for postgres backend');
+    }
+    return new PostgresSynthesisDatabase({
+      connectionString: options.postgresUrl,
+      poolSize: options.poolSize,
+      vectorchordProbes: options.vectorchordProbes,
+      vectorDimension: options.vectorDimension,
+    });
   }
 
   if (!options.sqlitePath) {

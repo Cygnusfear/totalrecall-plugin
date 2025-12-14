@@ -18,7 +18,7 @@ async function main() {
   const sessionId = input?.session_id || `session-${Date.now()}`;
 
   // FAST: Query recent syntheses for context injection
-  const recent = db.queryNodes({ limit: 5, order_by: 'last_updated' });
+  const recent = await db.queryNodes({ limit: 5, order_by: 'last_updated' });
 
   // Format for hook output
   const contextMsg =
@@ -42,7 +42,7 @@ Use synthesis_search(query) to find specific context.
     })
   );
 
-  db.close();
+  await db.close();
 
   // NOTE: We no longer spawn session-init here.
   // session-init was creating garbage "Session started: timestamp" nodes.

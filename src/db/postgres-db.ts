@@ -1,12 +1,6 @@
 /**
  * Total Recall v3 - PostgreSQL Database Implementation
  * Uses VectorChord Suite for vector search and BM25 for keyword ranking
- *
- * NOTE: This implementation is ASYNC and does not yet conform to the synchronous
- * ISynthesisDatabase interface. PostgreSQL support is a work in progress.
- *
- * For v3 Epic 1, SQLite remains the default and fully supported backend.
- * PostgreSQL implementation will be completed in a future Epic with full async support.
  */
 
 import postgres from 'postgres';
@@ -45,10 +39,9 @@ export interface PostgresDbConfig {
 }
 
 /**
- * PostgreSQL implementation (async - does not yet implement ISynthesisDatabase)
- * TODO: Either make interface async or create sync wrapper
+ * PostgreSQL implementation - fully async and implements ISynthesisDatabase
  */
-export class PostgresSynthesisDatabase {
+export class PostgresSynthesisDatabase implements ISynthesisDatabase {
   private sql: postgres.Sql;
   private probes: number;
   private dimension: number;

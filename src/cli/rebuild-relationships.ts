@@ -267,8 +267,8 @@ async function main() {
   const db = getDatabase();
 
   // Show initial stats
-  const orphansBefore = db.getOrphanNodes();
-  const totalNodes = db.queryNodes({ limit: 10000 }).length;
+  const orphansBefore = await db.getOrphanNodes();
+  const totalNodes = (await db.queryNodes({ limit: 10000 })).length;
   console.log(`Initial state:`);
   console.log(`  Total nodes:  ${totalNodes}`);
   console.log(`  Orphan nodes: ${orphansBefore.length} (${((orphansBefore.length / totalNodes) * 100).toFixed(1)}%)`);
@@ -322,7 +322,7 @@ async function main() {
     }
 
     if (!dryRun) {
-      const orphansAfter = db.getOrphanNodes();
+      const orphansAfter = await db.getOrphanNodes();
       console.log('');
       console.log(`Final state:`);
       console.log(`  Orphan nodes: ${orphansAfter.length} (${((orphansAfter.length / totalNodes) * 100).toFixed(1)}%)`);
@@ -336,7 +336,7 @@ async function main() {
     console.error('Error during rebuild:', error);
     process.exit(1);
   } finally {
-    db.close();
+    await db.close();
   }
 }
 

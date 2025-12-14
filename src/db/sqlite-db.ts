@@ -211,9 +211,9 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
 
   // ============ Node Operations ============
 
-  createNode(
+  async createNode(
     node: Omit<SynthesisNode, 'id' | 'created_at' | 'updated_at' | 'access_count' | 'last_accessed'>
-  ): SynthesisNode {
+  ): Promise<SynthesisNode> {
     const id = randomUUID();
     const now = Date.now();
 
@@ -260,15 +260,13 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     };
   }
 
-  // Note: SQLite implementation is synchronous, but interface allows Promise | T for compatibility
-
-  getNode(id: string): SynthesisNode | undefined {
+  async getNode(id: string): Promise<SynthesisNode | undefined> {
     return this.db.prepare('SELECT * FROM synthesis_nodes WHERE id = ?').get(id) as
       | SynthesisNode
       | undefined;
   }
 
-  queryNodes(filters: NodeQueryFilters): SynthesisNode[] {
+  async queryNodes(filters: NodeQueryFilters): Promise<SynthesisNode[]> {
     const { node_types, session_id, limit = 100, order_by = 'last_updated' } = filters;
 
     let query = 'SELECT * FROM synthesis_nodes WHERE 1=1';
@@ -289,7 +287,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     return this.db.prepare(query).all(...params) as SynthesisNode[];
   }
 
-  updateNodeAccess(nodeId: string): void {
+  async updateNodeAccess(nodeId: string): Promise<void> {
     this.db
       .prepare(
         `
@@ -301,7 +299,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       .run(Date.now(), nodeId);
   }
 
-  getNodesBySession(sessionId: string): SynthesisNode[] {
+  async getNodesBySession(sessionId: string): Promise<SynthesisNode[]> {
     return this.db
       .prepare(
         `
@@ -313,7 +311,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       .all(sessionId) as SynthesisNode[];
   }
 
-  getAllSessionIds(): string[] {
+  async getAllSessionIds(): Promise<string[]> {
     const rows = this.db
       .prepare(
         `
@@ -331,19 +329,19 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
 
   // ============ Vector Operations ============
 
-  insertEmbedding(nodeId: string, embedding: number[]): void {
+  async insertEmbedding(nodeId: string, embedding: number[]): Promise<void> {
     this.db.prepare('DELETE FROM vec_synthesis WHERE id = ?').run(nodeId);
     this.db
       .prepare('INSERT INTO vec_synthesis (id, embedding) VALUES (?, ?)')
       .run(nodeId, Buffer.from(new Float32Array(embedding).buffer));
   }
 
-  searchByVector(
+  async searchByVector(
     queryEmbedding: number[],
     limit: number,
     minScore: number,
     nodeTypes?: NodeType[]
-  ): SearchResult[] {
+  ): Promise<SearchResult[]> {
     let query = `
       SELECT
         sn.id as node_id,
@@ -390,7 +388,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
 
   // ============ Edge Operations ============
 
-  createEdge(edge: Omit<SynthesisEdge, 'id' | 'created_at'>): SynthesisEdge {
+  async createEdge(edge: Omit<SynthesisEdge, 'id' | 'created_at'>): Promise<SynthesisEdge> {
     const now = Date.now();
     const result = this.db
       .prepare(
@@ -408,7 +406,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     };
   }
 
-  edgeExists(nodeId1: string, nodeId2: string): boolean {
+  async edgeExists(nodeId1: string, nodeId2: string): Promise<boolean> {
     const result = this.db
       .prepare(
         `
@@ -423,7 +421,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     return result.count > 0;
   }
 
-  getOrphanNodes(nodeTypes?: NodeType[]): SynthesisNode[] {
+  async getOrphanNodes(nodeTypes?: NodeType[]): Promise<SynthesisNode[]> {
     let query = `
       SELECT * FROM synthesis_nodes
       WHERE id NOT IN (
@@ -445,7 +443,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     return this.db.prepare(query).all(...params) as SynthesisNode[];
   }
 
-  getEdgeCount(nodeId: string): number {
+  async getEdgeCount(nodeId: string): Promise<number> {
     const result = this.db
       .prepare(
         `
@@ -459,7 +457,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     return result.count;
   }
 
-  getRelatedNodes(nodeId: string): RelatedNode[] {
+  async getRelatedNodes(nodeId: string): Promise<RelatedNode[]> {
     const results = this.db
       .prepare(
         `
@@ -519,7 +517,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
 
   // ============ Raw Content Operations ============
 
-  createRawContent(content: Omit<RawContent, 'created_at'>): RawContent {
+  async createRawContent(content: Omit<RawContent, 'created_at'>): Promise<RawContent> {
     const now = Date.now();
 
     const stmt = this.db.prepare(`
@@ -546,7 +544,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     return { ...content, created_at: now };
   }
 
-  getRawContentBySession(sessionId: string, limit: number = 100): RawContent[] {
+  async getRawContentBySession(sessionId: string, limit: number = 100): Promise<RawContent[]> {
     return this.db
       .prepare(
         `
@@ -559,7 +557,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       .all(sessionId, limit) as RawContent[];
   }
 
-  getRawContentBySynthesis(synthesisNodeId: string): RawContent[] {
+  async getRawContentBySynthesis(synthesisNodeId: string): Promise<RawContent[]> {
     return this.db
       .prepare(
         `
@@ -571,7 +569,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       .all(synthesisNodeId) as RawContent[];
   }
 
-  getRawContentByIds(ids: string[]): RawContent[] {
+  async getRawContentByIds(ids: string[]): Promise<RawContent[]> {
     if (ids.length === 0) return [];
     const placeholders = ids.map(() => '?').join(',');
     return this.db
@@ -585,7 +583,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       .all(...ids) as RawContent[];
   }
 
-  linkRawContentToSynthesis(rawContentIds: string[], synthesisNodeId: string): void {
+  async linkRawContentToSynthesis(rawContentIds: string[], synthesisNodeId: string): Promise<void> {
     const stmt = this.db.prepare(`
       UPDATE raw_content
       SET synthesis_node_id = ?
@@ -599,9 +597,9 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
 
   // ============ Synthesis Queue Operations ============
 
-  createSynthesisQueueItem(
+  async createSynthesisQueueItem(
     item: Omit<SynthesisQueue, 'id' | 'started_at' | 'completed_at'>
-  ): SynthesisQueue {
+  ): Promise<SynthesisQueue> {
     const stmt = this.db.prepare(`
       INSERT INTO synthesis_queue (
         session_id, agent_id, chunk_type, raw_content_ids, context,
@@ -633,7 +631,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     };
   }
 
-  getPendingSynthesisQueue(filters: { limit?: number } = {}): SynthesisQueue[] {
+  async getPendingSynthesisQueue(filters: { limit?: number } = {}): Promise<SynthesisQueue[]> {
     const { limit = 10 } = filters;
     return this.db
       .prepare(
@@ -647,7 +645,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       .all(limit) as SynthesisQueue[];
   }
 
-  getSynthesisQueueItems(filters: SynthesisQueueFilters): SynthesisQueue[] {
+  async getSynthesisQueueItems(filters: SynthesisQueueFilters): Promise<SynthesisQueue[]> {
     const { session_id, status, limit = 50 } = filters;
 
     let query = 'SELECT * FROM synthesis_queue WHERE 1=1';
@@ -669,12 +667,12 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     return this.db.prepare(query).all(...params) as SynthesisQueue[];
   }
 
-  updateSynthesisQueueStatus(
+  async updateSynthesisQueueStatus(
     id: number,
     status: SynthesisQueueStatus,
     synthesisNodeId?: string | null,
     error?: string | null
-  ): void {
+  ): Promise<void> {
     const now = Date.now();
     const updates: string[] = ['status = ?'];
     const values: (string | number | null)[] = [status];
@@ -707,7 +705,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     this.withRetry(() => stmt.run(...values));
   }
 
-  incrementSynthesisQueueRetry(id: number): void {
+  async incrementSynthesisQueueRetry(id: number): Promise<void> {
     const stmt = this.db.prepare(`
       UPDATE synthesis_queue
       SET retry_count = retry_count + 1, status = 'pending'
@@ -716,7 +714,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     this.withRetry(() => stmt.run(id));
   }
 
-  resetStuckSynthesisItems(timeoutMs: number): number {
+  async resetStuckSynthesisItems(timeoutMs: number): Promise<number> {
     const cutoffTime = Date.now() - timeoutMs;
     const stmt = this.db.prepare(`
       UPDATE synthesis_queue
@@ -731,7 +729,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     return result.changes;
   }
 
-  getQueueStats(): QueueStats {
+  async getQueueStats(): Promise<QueueStats> {
     const stats = this.db
       .prepare(
         `
@@ -749,9 +747,9 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
 
   // ============ Progressive Disclosure Operations ============
 
-  createProgressiveDisclosureEvent(
+  async createProgressiveDisclosureEvent(
     event: Omit<ProgressiveDisclosureEvent, 'id' | 'created_at'>
-  ): ProgressiveDisclosureEvent {
+  ): Promise<ProgressiveDisclosureEvent> {
     const now = Date.now();
     const stmt = this.db.prepare(`
       INSERT INTO progressive_disclosure_events (
@@ -785,10 +783,10 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     };
   }
 
-  getProgressiveDisclosureAnalytics(
+  async getProgressiveDisclosureAnalytics(
     startTime: number,
     endTime: number
-  ): ProgressiveDisclosureAnalytics {
+  ): Promise<ProgressiveDisclosureAnalytics> {
     const stats = this.db
       .prepare(
         `
@@ -828,7 +826,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
 
   // ============ Utility ============
 
-  close(): void {
+  async close(): Promise<void> {
     this.db.close();
   }
 
