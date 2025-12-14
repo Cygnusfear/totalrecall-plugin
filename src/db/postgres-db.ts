@@ -45,6 +45,7 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
   private sql: postgres.Sql;
   private probes: number;
   private dimension: number;
+  private initPromise: Promise<void>;
 
   constructor(config: PostgresDbConfig) {
     this.probes = config.vectorchordProbes ?? 10;
@@ -58,12 +59,17 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
       connectionTimeout: config.connectionTimeout,
     });
 
-    // Initialize session settings for VectorChord
-    // Note: We don't await here to avoid blocking constructor, but failures are logged
-    this.initializeSession().catch((err) => {
-      console.error('[PostgresDB] CRITICAL: Failed to initialize session:', err);
-      console.error('[PostgresDB] BM25/Vector search may not work correctly.');
-    });
+    // Start session initialization - callers should use init() to await completion
+    this.initPromise = this.initializeSession();
+  }
+
+  /**
+   * Initialize the database connection
+   * Call this after construction to ensure session settings are applied
+   * Safe to call multiple times - subsequent calls return immediately
+   */
+  async init(): Promise<void> {
+    await this.initPromise;
   }
 
   /**
