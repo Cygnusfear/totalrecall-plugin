@@ -285,9 +285,10 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
     const vectorStr = `[${queryEmbedding.join(',')}]`;
     // Note: nodeTypes filtering is done inside hybrid_search function via subquery
     // We wrap in a subquery to filter results after RRF scoring
+    // JOIN with synthesis_nodes to get created_at for date filtering
     const results = nodeTypes?.length
       ? await this.sql`
-          SELECT * FROM (
+          SELECT hs.*, sn.created_at FROM (
             SELECT * FROM hybrid_search(
               ${query},
               ${vectorStr}::vector,
@@ -299,11 +300,12 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
               60
             )
           ) AS hs
-          WHERE node_type = ANY(${nodeTypes})
+          JOIN synthesis_nodes sn ON sn.id = hs.node_id
+          WHERE hs.node_type = ANY(${nodeTypes})
           LIMIT ${maxResults}
         `
       : await this.sql`
-          SELECT * FROM hybrid_search(
+          SELECT hs.*, sn.created_at FROM hybrid_search(
             ${query},
             ${vectorStr}::vector,
             ${maxResults},
@@ -312,7 +314,8 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
             ${weights.bm25 ?? 1.0},
             ${weights.trigram ?? 0.5},
             60
-          )
+          ) AS hs
+          JOIN synthesis_nodes sn ON sn.id = hs.node_id
         `;
 
     return results.map((r) => ({
@@ -320,7 +323,7 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
       one_liner: r.one_liner as string,
       node_type: r.node_type as NodeType,
       score: Number(r.score),
-      created_at: Date.now(), // Not returned by hybrid_search
+      created_at: Number(r.created_at),
       vectorRank: r.vector_rank !== 1000 ? Number(r.vector_rank) : undefined,
       bm25Rank: r.bm25_rank !== 1000 ? Number(r.bm25_rank) : undefined,
       trigramRank: r.trigram_rank !== 1000 ? Number(r.trigram_rank) : undefined,

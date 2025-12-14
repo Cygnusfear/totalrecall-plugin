@@ -18,36 +18,43 @@ async function main() {
   }
 
   const db = getDatabase();
-  await initEmbeddings();
 
-  let results;
-  let searchMode = 'vector';
+  try {
+    await initEmbeddings();
 
-  // Use hybrid search on PostgreSQL unless --vector flag is set
-  if (!forceVector && supportsHybridSearch(db)) {
+    // Generate embedding once (used by both search modes)
     const embedding = await generateEmbedding(query);
-    results = await db.hybridSearch({
-      query,
-      queryEmbedding: embedding,
-      maxResults: 10,
-      minScore: 0.3,
-      searchMode: 'hybrid',
-    });
-    searchMode = 'hybrid';
-  } else {
-    const embedding = await generateEmbedding(query);
-    results = await db.searchByVector(embedding, 10, 0.3);
+
+    let results;
+    let searchMode = 'vector';
+
+    // Use hybrid search on PostgreSQL unless --vector flag is set
+    if (!forceVector && supportsHybridSearch(db)) {
+      results = await db.hybridSearch({
+        query,
+        queryEmbedding: embedding,
+        maxResults: 10,
+        minScore: 0.3,
+        searchMode: 'hybrid',
+      });
+      searchMode = 'hybrid';
+    } else {
+      results = await db.searchByVector(embedding, 10, 0.3);
+    }
+
+    console.log(`Search mode: ${searchMode}`);
+    console.log('---');
+
+    for (const r of results) {
+      const pct = Math.round(r.score * 100);
+      console.log(`[${r.node_type}] ${pct}% - ${r.one_liner}`);
+    }
+  } catch (error) {
+    console.error('Search failed:', error instanceof Error ? error.message : error);
+    process.exit(1);
+  } finally {
+    await db.close();
   }
-
-  console.log(`Search mode: ${searchMode}`);
-  console.log('---');
-
-  for (const r of results) {
-    const pct = Math.round(r.score * 100);
-    console.log(`[${r.node_type}] ${pct}% - ${r.one_liner}`);
-  }
-
-  await db.close();
 }
 
 main().catch((e) => {

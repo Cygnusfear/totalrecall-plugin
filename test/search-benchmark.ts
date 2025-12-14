@@ -127,9 +127,9 @@ async function seedTestData(db: ISynthesisDatabase) {
     const embeddingText = `${node.one_liner} ${node.summary}`;
     const embedding = await generateEmbedding(embeddingText);
 
-    await db.createNode({
+    // Create node first (embedding is stored separately)
+    const createdNode = await db.createNode({
       ...node,
-      embedding,
       source_session_id: 'benchmark-session',
       entity_name: node.entity_name ?? null,
       entity_aliases: null,
@@ -142,6 +142,9 @@ async function seedTestData(db: ISynthesisDatabase) {
       source_agent_id: null,
       source_repo: null,
     });
+
+    // Insert embedding separately
+    await db.insertEmbedding(createdNode.id, embedding);
   }
 
   console.log(`Seeded ${TEST_NODES.length} test nodes`);
