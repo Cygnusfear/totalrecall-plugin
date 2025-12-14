@@ -1,19 +1,14 @@
 /**
  * CLI: session-graft
- * Called by SessionStart hook to provide context and graft session to synthesis graph
+ * Called by SessionStart hook to provide context from synthesis graph
  *
- * Fast path: Query existing nodes and output context immediately
- * Background: Spawn session-init to create node + embedding (non-blocking)
+ * This ONLY injects context - it does NOT create any nodes.
+ * Hooks should NEVER create synthesis nodes directly.
+ * All nodes are created by the background synthesis worker via LLM.
  */
 
-import { spawn } from 'child_process';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
 import { getDatabase } from '../db.js';
 import { readHookInput } from './hook-utils.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const cliPath = join(__dirname, '..', '..', 'cli', 'totalrecall.js');
 
 async function main() {
   const db = getDatabase();
@@ -49,12 +44,10 @@ Use synthesis_search(query) to find specific context.
 
   db.close();
 
-  // BACKGROUND: Spawn session-init to create node + embedding (non-blocking)
-  spawn('node', [cliPath, 'session-init'], {
-    detached: true,
-    stdio: 'ignore',
-    env: { ...process.env, SESSION_ID: sessionId },
-  }).unref();
+  // NOTE: We no longer spawn session-init here.
+  // session-init was creating garbage "Session started: timestamp" nodes.
+  // Hooks should NEVER create synthesis nodes directly.
+  // All real nodes are created by the background synthesis worker via LLM.
 }
 
 main().catch((e) => {

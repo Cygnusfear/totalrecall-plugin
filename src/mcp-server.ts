@@ -691,43 +691,12 @@ interface SessionGraftArgs {
 }
 
 async function handleSessionGraft(args: SessionGraftArgs) {
-  const { session_id, task_context, source_repo, agent_id } = args;
-  const now = Date.now();
+  const { session_id, task_context, source_repo } = args;
 
   try {
-    // Create a session summary node
-    const sessionNode = db.createNode({
-      node_type: 'summary',
-      one_liner: `Session: ${task_context || 'New session'}`,
-      summary: `Session grafted at ${new Date(now).toISOString()}${task_context ? ` for task: ${task_context}` : ''}`,
-      full_synthesis: `Session ${session_id} started. ${task_context ? `Task context: ${task_context}` : 'No specific task context provided.'}`,
-      entity_name: null,
-      entity_aliases: null,
-      temporal_context: `session start: ${new Date(now).toISOString()}`,
-      first_seen: now,
-      last_updated: now,
-      status: null,
-      assigned_agent: agent_id ?? null,
-      priority: null,
-      source_session_id: session_id,
-      source_agent_id: agent_id ?? null,
-      source_repo: source_repo ?? null,
-    });
-
-    // Generate embedding for session node
-    try {
-      const embedding = await generateSynthesisEmbedding(
-        sessionNode.one_liner,
-        sessionNode.summary,
-        'summary',
-        {
-          sourceRepo: source_repo,
-        }
-      );
-      db.insertEmbedding(sessionNode.id, embedding);
-    } catch (e) {
-      console.error('Failed to generate session embedding:', e);
-    }
+    // NOTE: We NO LONGER create session nodes here.
+    // Hooks should NEVER create synthesis nodes directly.
+    // All real nodes are created by the background synthesis worker via LLM.
 
     // Query for relevant syntheses using vector search if task_context provided
     let relevant_syntheses;
@@ -744,17 +713,6 @@ async function handleSessionGraft(args: SessionGraftArgs) {
       });
     }
 
-    // Create edges from session node to relevant syntheses
-    for (const synthesis of relevant_syntheses.slice(0, 5)) {
-      db.createEdge({
-        from_node_id: sessionNode.id,
-        to_node_id: synthesis.id,
-        edge_type: 'relates_to',
-        weight: 1.0,
-        context: 'session graft',
-      });
-    }
-
     // Build grafted context response
     const unfoldable_refs = relevant_syntheses.map((node) => ({
       node_id: node.id,
@@ -764,7 +722,7 @@ async function handleSessionGraft(args: SessionGraftArgs) {
     }));
 
     return {
-      session_node_id: sessionNode.id,
+      session_id,
       grafted_context: {
         relevant_syntheses: relevant_syntheses.map((node) => ({
           node_id: node.id,
@@ -783,7 +741,7 @@ async function handleSessionGraft(args: SessionGraftArgs) {
     return {
       error: 'Failed to graft session',
       message: error instanceof Error ? error.message : 'Unknown error',
-      session_node_id: null,
+      session_id,
       grafted_context: {
         relevant_syntheses: [],
         unfoldable_refs: [],

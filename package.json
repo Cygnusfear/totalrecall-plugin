@@ -1,6 +1,6 @@
 {
   "name": "totalrecall-plugin",
-  "version": "2.1.1",
+  "version": "2.2.0",
   "description": "Total Recall - Standalone synthesis-first memory for Claude Code",
   "type": "module",
   "main": "dist/mcp-server.js",
