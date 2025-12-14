@@ -28,8 +28,10 @@ import {
   type ProgressiveDisclosureAnalytics,
   type RelatedNode,
   type TextSearchMatchLocation,
+  type SearchRankingConfig,
   TEXT_SEARCH_FIELDS,
   processTextSearchResults,
+  applySearchRanking,
 } from './interface.js';
 
 // macOS requires custom SQLite for extension support
@@ -414,8 +416,12 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     queryEmbedding: number[],
     limit: number,
     minScore: number,
-    nodeTypes?: NodeType[]
+    nodeTypes?: NodeType[],
+    rankingConfig?: SearchRankingConfig
   ): Promise<SearchResult[]> {
+    // Over-fetch to allow for ranking before limiting
+    const fetchLimit = limit * 3;
+
     let query = `
       SELECT
         sn.id as node_id,
@@ -430,7 +436,7 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
 
     const params: (string | number | Buffer | null)[] = [
       Buffer.from(new Float32Array(queryEmbedding).buffer),
-      limit * 2,
+      fetchLimit,
     ];
 
     if (nodeTypes?.length) {
@@ -448,7 +454,8 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       distance: number;
     }>;
 
-    return results
+    // Convert to SearchResult format
+    const searchResults: SearchResult[] = results
       .map((r) => ({
         node_id: r.node_id,
         one_liner: r.one_liner,
@@ -456,8 +463,52 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
         node_type: r.node_type,
         created_at: r.created_at,
       }))
-      .filter((r) => r.score >= minScore)
-      .slice(0, limit);
+      .filter((r) => r.score >= minScore);
+
+    // If no ranking config, return simple similarity-sorted results
+    if (!rankingConfig) {
+      return searchResults.slice(0, limit);
+    }
+
+    // Fetch edge counts for all candidate nodes
+    const nodeIds = searchResults.map((r) => r.node_id);
+    const edgeCounts = new Map<string, number>();
+
+    if (nodeIds.length > 0) {
+      const placeholders = nodeIds.map(() => '?').join(',');
+      const edgeCountResults = this.db
+        .prepare(
+          `
+        SELECT
+          node_id,
+          COUNT(*) as edge_count
+        FROM (
+          SELECT from_node_id as node_id FROM synthesis_edges WHERE from_node_id IN (${placeholders})
+          UNION ALL
+          SELECT to_node_id as node_id FROM synthesis_edges WHERE to_node_id IN (${placeholders})
+        )
+        GROUP BY node_id
+      `
+        )
+        .all(...nodeIds, ...nodeIds) as Array<{ node_id: string; edge_count: number }>;
+
+      for (const row of edgeCountResults) {
+        edgeCounts.set(row.node_id, row.edge_count);
+      }
+    }
+
+    // Apply multi-factor ranking
+    const rankedResults = applySearchRanking(searchResults, edgeCounts, rankingConfig);
+
+    // Return top results, converting back to SearchResult
+    // Note: We keep the ranking metadata in the score field
+    return rankedResults.slice(0, limit).map((r) => ({
+      node_id: r.node_id,
+      one_liner: r.one_liner,
+      score: r.rankingScore, // Use combined ranking score instead of just similarity
+      node_type: r.node_type,
+      created_at: r.created_at,
+    }));
   }
 
   // ============ Edge Operations ============

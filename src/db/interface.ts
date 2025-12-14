@@ -70,6 +70,73 @@ export interface RelatedNode {
 }
 
 /**
+ * Search ranking configuration
+ * Controls how different factors influence search result ordering
+ */
+export interface SearchRankingConfig {
+  /**
+   * Weight for recency (0-1)
+   * Higher = more recent nodes ranked higher
+   * Default: 0.3
+   */
+  recencyWeight?: number;
+
+  /**
+   * Weight for node type importance (0-1)
+   * Uses type importance scores to prioritize certain node types
+   * Default: 0.2
+   */
+  nodeTypeWeight?: number;
+
+  /**
+   * Weight for relationship density (0-1)
+   * Nodes with more connections ranked higher
+   * Default: 0.1
+   */
+  relationshipWeight?: number;
+
+  /**
+   * Weight for base similarity score (0-1)
+   * The vector/BM25/trigram similarity
+   * Default: 0.4
+   */
+  similarityWeight?: number;
+
+  /**
+   * Recency decay factor (days)
+   * How quickly recency bonus decays over time
+   * Default: 30 days
+   */
+  recencyDecayDays?: number;
+
+  /**
+   * Node type importance scores
+   * Custom importance values for different node types
+   * Default: decision=1.0, entity=0.9, learning=0.8, task=0.7, summary=0.6, event=0.5
+   */
+  nodeTypeScores?: Partial<Record<NodeType, number>>;
+}
+
+/**
+ * Default ranking configuration
+ */
+export const DEFAULT_RANKING_CONFIG: Required<SearchRankingConfig> = {
+  recencyWeight: 0.3,
+  nodeTypeWeight: 0.2,
+  relationshipWeight: 0.1,
+  similarityWeight: 0.4,
+  recencyDecayDays: 30,
+  nodeTypeScores: {
+    decision: 1.0,
+    entity: 0.9,
+    learning: 0.8,
+    task: 0.7,
+    summary: 0.6,
+    event: 0.5,
+  },
+};
+
+/**
  * Hybrid search options (PostgreSQL only)
  */
 export interface HybridSearchOptions {
@@ -84,6 +151,11 @@ export interface HybridSearchOptions {
     bm25?: number;
     trigram?: number;
   };
+  /**
+   * Custom ranking configuration
+   * If not provided, uses DEFAULT_RANKING_CONFIG
+   */
+  rankingConfig?: SearchRankingConfig;
 }
 
 /**
@@ -160,12 +232,14 @@ export interface ISynthesisDatabase {
 
   /**
    * Search nodes by vector similarity
+   * Now includes intelligent ranking based on recency, type, and relationships
    */
   searchByVector(
     queryEmbedding: number[],
     limit: number,
     minScore: number,
-    nodeTypes?: NodeType[]
+    nodeTypes?: NodeType[],
+    rankingConfig?: SearchRankingConfig
   ): Promise<SearchResult[]>;
 
   // ============ Edge Operations ============
@@ -434,4 +508,117 @@ export function processTextSearchResults<T extends { id: string; last_updated: n
     const { priority: _priority, ...nodeWithLocation } = r;
     return nodeWithLocation as T & { match_location: TextSearchMatchLocation };
   });
+}
+
+// ============ Shared Utilities for Search Ranking ============
+
+/**
+ * Extended search result with ranking metadata
+ */
+export interface RankedSearchResult extends SearchResult {
+  rankingScore: number;
+  recencyScore?: number;
+  typeScore?: number;
+  relationshipScore?: number;
+  edgeCount?: number;
+}
+
+/**
+ * Calculate recency score with exponential decay
+ * Returns 0-1 where 1 = most recent
+ */
+export function calculateRecencyScore(
+  createdAt: number,
+  decayDays: number = 30
+): number {
+  const now = Date.now();
+  const ageMs = now - createdAt;
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+
+  // Exponential decay: score = e^(-age/decay)
+  // At decay days: score = 0.368 (e^-1)
+  // At 2x decay days: score = 0.135 (e^-2)
+  return Math.exp(-ageDays / decayDays);
+}
+
+/**
+ * Calculate node type importance score
+ * Returns 0-1 based on node type importance
+ */
+export function calculateTypeScore(
+  nodeType: NodeType,
+  typeScores: Record<NodeType, number>
+): number {
+  return typeScores[nodeType] ?? 0.5; // Default to 0.5 if type not found
+}
+
+/**
+ * Calculate relationship density score
+ * Normalizes edge count to 0-1 scale with logarithmic scaling
+ * Returns 0-1 where higher edge count = higher score
+ */
+export function calculateRelationshipScore(edgeCount: number): number {
+  if (edgeCount === 0) return 0;
+
+  // Logarithmic scaling: log(1 + edges) / log(101)
+  // This maps 0->0, 10->0.52, 100->1.0
+  // Prevents highly connected nodes from dominating
+  return Math.log(1 + Math.min(edgeCount, 100)) / Math.log(101);
+}
+
+/**
+ * Apply multi-factor ranking to search results
+ * Combines similarity, recency, type importance, and relationship density
+ */
+export function applySearchRanking<T extends SearchResult>(
+  results: T[],
+  edgeCounts: Map<string, number>,
+  config: SearchRankingConfig = {}
+): RankedSearchResult[] {
+  // Merge config with defaults
+  const fullConfig: Required<SearchRankingConfig> = {
+    ...DEFAULT_RANKING_CONFIG,
+    ...config,
+    nodeTypeScores: {
+      ...DEFAULT_RANKING_CONFIG.nodeTypeScores,
+      ...(config.nodeTypeScores ?? {}),
+    },
+  };
+
+  // Calculate component scores for each result
+  const rankedResults: RankedSearchResult[] = results.map((result) => {
+    const recencyScore = calculateRecencyScore(
+      result.created_at,
+      fullConfig.recencyDecayDays
+    );
+
+    const typeScore = calculateTypeScore(
+      result.node_type,
+      fullConfig.nodeTypeScores as Record<NodeType, number>
+    );
+
+    const edgeCount = edgeCounts.get(result.node_id) ?? 0;
+    const relationshipScore = calculateRelationshipScore(edgeCount);
+
+    // Weighted combination of all factors
+    const rankingScore =
+      fullConfig.similarityWeight * result.score +
+      fullConfig.recencyWeight * recencyScore +
+      fullConfig.nodeTypeWeight * typeScore +
+      fullConfig.relationshipWeight * relationshipScore;
+
+    return {
+      ...result,
+      rankingScore,
+      recencyScore,
+      typeScore,
+      relationshipScore,
+      edgeCount,
+    };
+  });
+
+  // Sort by ranking score (descending)
+  rankedResults.sort((a, b) => b.rankingScore - a.rankingScore);
+
+  return rankedResults;
 }

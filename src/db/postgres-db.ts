@@ -27,8 +27,10 @@ import {
   type HybridSearchOptions,
   type HybridSearchResult,
   type TextSearchMatchLocation,
+  type SearchRankingConfig,
   TEXT_SEARCH_FIELDS,
   processTextSearchResults,
+  applySearchRanking,
 } from './interface.js';
 
 /**
@@ -273,9 +275,13 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
     queryEmbedding: number[],
     limit: number,
     minScore: number,
-    nodeTypes?: NodeType[]
+    nodeTypes?: NodeType[],
+    rankingConfig?: SearchRankingConfig
   ): Promise<SearchResult[]> {
     const vectorStr = `[${queryEmbedding.join(',')}]`;
+
+    // Over-fetch to allow for ranking before limiting
+    const fetchLimit = limit * 3;
 
     // VectorChord uses L2 distance operator <->
     // For normalized vectors: similarity = 1 - (distance^2 / 2)
@@ -290,10 +296,11 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
       WHERE embedding IS NOT NULL
       ${nodeTypes?.length ? this.sql`AND node_type = ANY(${nodeTypes})` : this.sql``}
       ORDER BY embedding <-> ${vectorStr}::vector
-      LIMIT ${limit * 2}
+      LIMIT ${fetchLimit}
     `;
 
-    return results
+    // Convert to SearchResult format
+    const searchResults: SearchResult[] = results
       .map((r) => ({
         node_id: r.node_id as string,
         one_liner: r.one_liner as string,
@@ -301,8 +308,47 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
         created_at: Number(r.created_at),
         score: 1 - (Number(r.distance) ** 2) / 2, // Convert L2 to cosine similarity
       }))
-      .filter((r) => r.score >= minScore)
-      .slice(0, limit);
+      .filter((r) => r.score >= minScore);
+
+    // If no ranking config, return simple similarity-sorted results
+    if (!rankingConfig) {
+      return searchResults.slice(0, limit);
+    }
+
+    // Fetch edge counts for all candidate nodes
+    const nodeIds = searchResults.map((r) => r.node_id);
+    const edgeCounts = new Map<string, number>();
+
+    if (nodeIds.length > 0) {
+      const edgeCountResults = await this.sql`
+        SELECT
+          node_id,
+          COUNT(*) as edge_count
+        FROM (
+          SELECT from_node_id as node_id FROM synthesis_edges WHERE from_node_id = ANY(${nodeIds})
+          UNION ALL
+          SELECT to_node_id as node_id FROM synthesis_edges WHERE to_node_id = ANY(${nodeIds})
+        ) edges
+        GROUP BY node_id
+      `;
+
+      for (const row of edgeCountResults) {
+        edgeCounts.set(row.node_id as string, Number(row.edge_count));
+      }
+    }
+
+    // Apply multi-factor ranking
+    const rankedResults = applySearchRanking(searchResults, edgeCounts, rankingConfig);
+
+    // Return top results, converting back to SearchResult
+    // Note: We keep the ranking metadata in the score field
+    return rankedResults.slice(0, limit).map((r) => ({
+      node_id: r.node_id,
+      one_liner: r.one_liner,
+      score: r.rankingScore, // Use combined ranking score instead of just similarity
+      node_type: r.node_type,
+      created_at: r.created_at,
+    }));
   }
 
   // ============ Hybrid Search (PostgreSQL-only) ============
@@ -316,11 +362,12 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
       nodeTypes,
       searchMode = 'hybrid',
       weights = { vector: 1.0, bm25: 1.0, trigram: 0.5 },
+      rankingConfig,
     } = options;
 
     // Vector-only mode
     if (searchMode === 'vector' && queryEmbedding) {
-      const results = await this.searchByVector(queryEmbedding, maxResults, minScore, nodeTypes);
+      const results = await this.searchByVector(queryEmbedding, maxResults, minScore, nodeTypes, rankingConfig);
       return results.map((r) => ({ ...r, matchType: 'vector' as const }));
     }
 

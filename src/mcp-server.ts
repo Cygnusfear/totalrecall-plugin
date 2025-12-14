@@ -544,11 +544,13 @@ async function handleSynthesisSearch(args: SynthesisSearchArgs) {
     let searchMode: 'hybrid' | 'vector' = 'vector';
 
     // Use hybrid search on PostgreSQL, vector-only on SQLite
+    // Note: Ranking is enabled by default with DEFAULT_RANKING_CONFIG
     if (supportsHybridSearch(db)) {
       // Generate query embedding for hybrid search
       const queryEmbedding = await generateEmbedding(query);
 
       // Use hybrid search combining vector, BM25, and trigram
+      // Ranking is applied automatically via rankingConfig
       results = await db.hybridSearch({
         query,
         queryEmbedding,
@@ -556,12 +558,19 @@ async function handleSynthesisSearch(args: SynthesisSearchArgs) {
         minScore: min_score,
         nodeTypes: node_types,
         searchMode: 'hybrid',
+        rankingConfig: {}, // Use default ranking config
       });
       searchMode = 'hybrid';
     } else {
-      // Fallback to vector-only search for SQLite
+      // Fallback to vector-only search for SQLite with ranking
       const queryEmbedding = await generateEmbedding(query);
-      results = await db.searchByVector(queryEmbedding, max_results * 2, min_score, node_types);
+      results = await db.searchByVector(
+        queryEmbedding,
+        max_results * 2,
+        min_score,
+        node_types,
+        {} // Use default ranking config
+      );
     }
 
     // Apply date filters
@@ -776,7 +785,8 @@ async function handleSynthesisGetContext(args: SynthesisGetContextArgs) {
     // If task_context provided, do semantic search; otherwise use recency
     if (task_context) {
       const queryEmbedding = await generateEmbedding(task_context);
-      const searchResults = await db.searchByVector(queryEmbedding, max_nodes, 0.3);
+      // Use ranking for better context relevance
+      const searchResults = await db.searchByVector(queryEmbedding, max_nodes, 0.3, undefined, {});
 
       // Fetch full nodes for search results
       syntheses = (await Promise.all(
@@ -874,7 +884,8 @@ async function handleSessionGraft(args: SessionGraftArgs) {
     let relevant_syntheses;
     if (task_context) {
       const queryEmbedding = await generateEmbedding(task_context);
-      const searchResults = await db.searchByVector(queryEmbedding, 10, 0.3);
+      // Use ranking for better graft quality
+      const searchResults = await db.searchByVector(queryEmbedding, 10, 0.3, undefined, {});
       relevant_syntheses = (await Promise.all(
         searchResults.map((r) => db.getNode(r.node_id))
       )).filter((n): n is NonNullable<typeof n> => n !== undefined);
