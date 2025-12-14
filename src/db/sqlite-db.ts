@@ -1129,6 +1129,102 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
     return result.changes > 0;
   }
 
+  // ============ Memory Consolidation / Salience Scoring ============
+
+  async calculateMemorySalience(
+    config?: import('./interface.js').SalienceConfig,
+    limit: number = 100
+  ): Promise<import('./interface.js').SalienceResult[]> {
+    const { calculateSalienceScore, DEFAULT_SALIENCE_CONFIG } = await import('./interface.js');
+    const fullConfig = { ...DEFAULT_SALIENCE_CONFIG, ...(config ?? {}) };
+
+    // Fetch all nodes with their access stats
+    const nodes = this.db
+      .prepare(
+        `
+      SELECT id, node_type, one_liner, access_count, last_accessed, created_at
+      FROM synthesis_nodes
+      ORDER BY created_at DESC
+    `
+      )
+      .all() as Array<{
+      id: string;
+      node_type: NodeType;
+      one_liner: string;
+      access_count: number;
+      last_accessed: number | null;
+      created_at: number;
+    }>;
+
+    // Get edge counts for all nodes
+    const edgeCountMap = new Map<string, number>();
+    const edgeResults = this.db
+      .prepare(
+        `
+      SELECT node_id, COUNT(*) as edge_count
+      FROM (
+        SELECT from_node_id as node_id FROM synthesis_edges
+        UNION ALL
+        SELECT to_node_id as node_id FROM synthesis_edges
+      )
+      GROUP BY node_id
+    `
+      )
+      .all() as Array<{ node_id: string; edge_count: number }>;
+
+    for (const row of edgeResults) {
+      edgeCountMap.set(row.node_id, row.edge_count);
+    }
+
+    // Calculate salience for each node
+    const results: import('./interface.js').SalienceResult[] = nodes.map((node) => {
+      const edgeCount = edgeCountMap.get(node.id) ?? 0;
+      const salienceScore = calculateSalienceScore(
+        node.access_count,
+        node.last_accessed,
+        edgeCount,
+        node.node_type,
+        fullConfig
+      );
+
+      return {
+        node_id: node.id,
+        one_liner: node.one_liner,
+        node_type: node.node_type,
+        salience_score: salienceScore,
+        access_count: node.access_count,
+        last_accessed: node.last_accessed,
+        edge_count: edgeCount,
+        created_at: node.created_at,
+      };
+    });
+
+    // Sort by salience (descending) and limit
+    results.sort((a, b) => b.salience_score - a.salience_score);
+    return results.slice(0, limit);
+  }
+
+  async getLowSalienceNodes(
+    threshold?: number,
+    config?: import('./interface.js').SalienceConfig,
+    limit: number = 100
+  ): Promise<import('./interface.js').SalienceResult[]> {
+    const { DEFAULT_SALIENCE_CONFIG } = await import('./interface.js');
+    const fullConfig = { ...DEFAULT_SALIENCE_CONFIG, ...(config ?? {}) };
+    const minThreshold = threshold ?? fullConfig.minSalienceThreshold;
+
+    // Calculate salience for all nodes
+    const allResults = await this.calculateMemorySalience(config, 10000);
+
+    // Filter for low-salience nodes
+    const lowSalienceNodes = allResults.filter((r) => r.salience_score < minThreshold);
+
+    // Sort by salience (ascending - lowest first)
+    lowSalienceNodes.sort((a, b) => a.salience_score - b.salience_score);
+
+    return lowSalienceNodes.slice(0, limit);
+  }
+
   // ============ Utility ============
 
   async close(): Promise<void> {

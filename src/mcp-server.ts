@@ -355,6 +355,51 @@ Use this to:
       required: ['query'],
     },
   },
+  {
+    name: 'memory_consolidate',
+    description: `Analyze memory salience and identify which memories are most/least important. This simulates memory consolidation (dreaming).
+
+Use this to:
+- Identify the most salient (important) memories based on access patterns
+- Find low-salience memories that may be candidates for archival
+- Understand which knowledge is actively used vs dormant
+- Optimize memory by focusing on high-value nodes
+
+Salience is calculated from:
+- Access frequency (how often a node is accessed)
+- Access recency (when it was last accessed)
+- Relationship density (how connected it is)
+- Node type importance (decisions > entities > learnings, etc.)`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: {
+          type: 'string',
+          enum: ['high_salience', 'low_salience', 'all'],
+          description: 'What to return: high_salience (most important), low_salience (archival candidates), or all (sorted by salience)',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of nodes to return (default: 20)',
+        },
+        threshold: {
+          type: 'number',
+          description: 'For low_salience mode: minimum threshold below which nodes are considered low-salience (default: 0.1)',
+        },
+        config: {
+          type: 'object',
+          description: 'Custom salience configuration weights',
+          properties: {
+            accessWeight: { type: 'number', description: 'Weight for access frequency (default: 0.4)' },
+            accessRecencyWeight: { type: 'number', description: 'Weight for access recency (default: 0.3)' },
+            relationshipWeight: { type: 'number', description: 'Weight for relationships (default: 0.2)' },
+            nodeTypeWeight: { type: 'number', description: 'Weight for node type importance (default: 0.1)' },
+            decayHalfLifeDays: { type: 'number', description: 'Decay half-life in days (default: 90)' },
+          },
+        },
+      },
+    },
+  },
 ];
 
 // List tools handler
@@ -408,6 +453,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'raw_search':
         result = await handleRawSearch(args as unknown as RawSearchArgs);
+        break;
+
+      case 'memory_consolidate':
+        result = await handleMemoryConsolidate(args as unknown as MemoryConsolidateArgs);
         break;
 
       default:
@@ -1286,6 +1335,97 @@ async function handleRawSearch(args: RawSearchArgs) {
       message: error instanceof Error ? error.message : 'Unknown error',
       results: [],
       search_latency_ms: Date.now() - startTime,
+    };
+  }
+}
+
+interface MemoryConsolidateArgs {
+  mode?: 'high_salience' | 'low_salience' | 'all';
+  limit?: number;
+  threshold?: number;
+  config?: {
+    accessWeight?: number;
+    accessRecencyWeight?: number;
+    relationshipWeight?: number;
+    nodeTypeWeight?: number;
+    decayHalfLifeDays?: number;
+  };
+}
+
+async function handleMemoryConsolidate(args: MemoryConsolidateArgs) {
+  const { mode = 'all', limit = 20, threshold, config } = args;
+  const startTime = Date.now();
+
+  try {
+    let results;
+
+    if (mode === 'low_salience') {
+      // Get low-salience nodes (archival candidates)
+      results = await db.getLowSalienceNodes(threshold, config, limit);
+    } else {
+      // Get all nodes sorted by salience
+      results = await db.calculateMemorySalience(config, mode === 'all' ? limit : limit * 2);
+
+      if (mode === 'high_salience') {
+        // Already sorted by salience descending, just take top N
+        results = results.slice(0, limit);
+      }
+    }
+
+    const processingTimeMs = Date.now() - startTime;
+
+    // Calculate statistics
+    const avgSalience = results.reduce((sum, r) => sum + r.salience_score, 0) / results.length;
+    const avgAccessCount = results.reduce((sum, r) => sum + r.access_count, 0) / results.length;
+    const avgEdgeCount = results.reduce((sum, r) => sum + r.edge_count, 0) / results.length;
+
+    // Count by node type
+    const typeDistribution: Record<string, number> = {};
+    for (const r of results) {
+      typeDistribution[r.node_type] = (typeDistribution[r.node_type] ?? 0) + 1;
+    }
+
+    return {
+      mode,
+      results: results.map((r) => ({
+        node_id: r.node_id,
+        one_liner: r.one_liner,
+        node_type: r.node_type,
+        salience_score: Math.round(r.salience_score * 1000) / 1000,
+        access_count: r.access_count,
+        last_accessed: r.last_accessed,
+        edge_count: r.edge_count,
+        created_at: r.created_at,
+        days_since_creation: Math.floor((Date.now() - r.created_at) / (1000 * 60 * 60 * 24)),
+        days_since_access: r.last_accessed
+          ? Math.floor((Date.now() - r.last_accessed) / (1000 * 60 * 60 * 24))
+          : null,
+      })),
+      statistics: {
+        total_nodes: results.length,
+        avg_salience: Math.round(avgSalience * 1000) / 1000,
+        avg_access_count: Math.round(avgAccessCount * 10) / 10,
+        avg_edge_count: Math.round(avgEdgeCount * 10) / 10,
+        type_distribution: typeDistribution,
+      },
+      processing_time_ms: processingTimeMs,
+      message:
+        mode === 'high_salience'
+          ? `Found ${results.length} most salient memories (avg salience: ${Math.round(avgSalience * 100)}%)`
+          : mode === 'low_salience'
+            ? `Found ${results.length} low-salience memories (candidates for archival)`
+            : `Analyzed ${results.length} memories by salience (avg: ${Math.round(avgSalience * 100)}%)`,
+      next_step:
+        mode === 'low_salience'
+          ? 'Consider archiving or pruning these low-salience nodes if memory optimization is needed.'
+          : 'Use synthesis_unfold to examine specific nodes, or adjust salience config weights to tune importance calculation.',
+    };
+  } catch (error) {
+    return {
+      error: 'Memory consolidation failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      results: [],
+      processing_time_ms: Date.now() - startTime,
     };
   }
 }

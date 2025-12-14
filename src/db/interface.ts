@@ -441,6 +441,28 @@ export interface ISynthesisDatabase {
    */
   deleteCoreMemoryBlock(blockType: CoreMemoryBlockType): Promise<boolean>;
 
+  // ============ Memory Consolidation / Salience Scoring (Issue #13) ============
+
+  /**
+   * Calculate salience scores for all nodes
+   * Returns nodes sorted by salience (most salient first)
+   * Used for memory consolidation and identifying important memories
+   */
+  calculateMemorySalience(
+    config?: SalienceConfig,
+    limit?: number
+  ): Promise<SalienceResult[]>;
+
+  /**
+   * Get low-salience nodes (candidates for archival/pruning)
+   * Returns nodes below the salience threshold
+   */
+  getLowSalienceNodes(
+    threshold?: number,
+    config?: SalienceConfig,
+    limit?: number
+  ): Promise<SalienceResult[]>;
+
   // ============ Utility ============
 
   /**
@@ -621,4 +643,172 @@ export function applySearchRanking<T extends SearchResult>(
   rankedResults.sort((a, b) => b.rankingScore - a.rankingScore);
 
   return rankedResults;
+}
+
+// ============ Salience Scoring (Memory Consolidation / Dreaming) ============
+
+/**
+ * Salience configuration for memory consolidation
+ */
+export interface SalienceConfig {
+  /**
+   * Weight for access frequency (0-1)
+   * How much access count matters for salience
+   * Default: 0.4
+   */
+  accessWeight?: number;
+
+  /**
+   * Weight for recency of access (0-1)
+   * How much recent access matters
+   * Default: 0.3
+   */
+  accessRecencyWeight?: number;
+
+  /**
+   * Weight for relationship connections (0-1)
+   * Nodes with many relationships are more salient
+   * Default: 0.2
+   */
+  relationshipWeight?: number;
+
+  /**
+   * Weight for node type importance (0-1)
+   * Default: 0.1
+   */
+  nodeTypeWeight?: number;
+
+  /**
+   * Decay half-life in days
+   * How quickly unaccessed memories lose salience
+   * Default: 90 days
+   */
+  decayHalfLifeDays?: number;
+
+  /**
+   * Minimum salience threshold for retention
+   * Nodes below this are candidates for archival/pruning
+   * Default: 0.1 (keep 90% of memories)
+   */
+  minSalienceThreshold?: number;
+}
+
+/**
+ * Default salience configuration
+ */
+export const DEFAULT_SALIENCE_CONFIG: Required<SalienceConfig> = {
+  accessWeight: 0.4,
+  accessRecencyWeight: 0.3,
+  relationshipWeight: 0.2,
+  nodeTypeWeight: 0.1,
+  decayHalfLifeDays: 90,
+  minSalienceThreshold: 0.1,
+};
+
+/**
+ * Node with computed salience score
+ */
+export interface SalienceResult {
+  node_id: string;
+  one_liner: string;
+  node_type: NodeType;
+  salience_score: number;
+  access_count: number;
+  last_accessed: number | null;
+  edge_count: number;
+  created_at: number;
+  // Component scores for debugging
+  access_score?: number;
+  access_recency_score?: number;
+  relationship_score?: number;
+  type_score?: number;
+}
+
+/**
+ * Calculate access frequency score
+ * Uses logarithmic scaling to prevent highly accessed nodes from dominating
+ * Returns 0-1 where 1 = very frequently accessed
+ */
+export function calculateAccessScore(accessCount: number): number {
+  if (accessCount === 0) return 0;
+
+  // Logarithmic scaling: log(1 + access_count) / log(1001)
+  // This maps 0->0, 10->0.50, 100->0.75, 1000->1.0
+  return Math.log(1 + Math.min(accessCount, 1000)) / Math.log(1001);
+}
+
+/**
+ * Calculate access recency score with exponential decay
+ * Returns 0-1 where 1 = accessed very recently
+ */
+export function calculateAccessRecencyScore(
+  lastAccessed: number | null,
+  decayHalfLifeDays: number = 90
+): number {
+  if (lastAccessed === null) return 0;
+
+  const now = Date.now();
+  const ageMs = now - lastAccessed;
+  const ageDays = ageMs / (1000 * 60 * 60 * 24);
+
+  // Exponential decay with half-life: score = 0.5^(age/half-life)
+  // At half-life: score = 0.5
+  // At 2x half-life: score = 0.25
+  return Math.pow(0.5, ageDays / decayHalfLifeDays);
+}
+
+/**
+ * Calculate salience score for a memory node
+ * Combines access patterns, relationships, and importance
+ * Returns 0-1 where higher = more salient (important to keep)
+ */
+export function calculateSalienceScore(
+  accessCount: number,
+  lastAccessed: number | null,
+  edgeCount: number,
+  nodeType: NodeType,
+  config: SalienceConfig = {}
+): number {
+  const fullConfig: Required<SalienceConfig> = {
+    ...DEFAULT_SALIENCE_CONFIG,
+    ...config,
+  };
+
+  // Component scores
+  const accessScore = calculateAccessScore(accessCount);
+  const accessRecencyScore = calculateAccessRecencyScore(
+    lastAccessed,
+    fullConfig.decayHalfLifeDays
+  );
+  const relationshipScore = calculateRelationshipScore(edgeCount);
+  const typeScore = calculateTypeScore(
+    nodeType,
+    DEFAULT_RANKING_CONFIG.nodeTypeScores as Record<NodeType, number>
+  );
+
+  // Weighted combination
+  const salienceScore =
+    fullConfig.accessWeight * accessScore +
+    fullConfig.accessRecencyWeight * accessRecencyScore +
+    fullConfig.relationshipWeight * relationshipScore +
+    fullConfig.nodeTypeWeight * typeScore;
+
+  return Math.min(1.0, Math.max(0.0, salienceScore));
+}
+
+/**
+ * Apply salience decay to unaccessed memories
+ * Reduces salience for nodes that haven't been accessed recently
+ * This simulates memory consolidation / forgetting
+ */
+export function applySalienceDecay(
+  currentSalience: number,
+  daysSinceLastAccess: number,
+  decayHalfLifeDays: number = 90
+): number {
+  if (daysSinceLastAccess === 0) return currentSalience;
+
+  // Exponential decay: salience *= 0.5^(days/half-life)
+  const decayFactor = Math.pow(0.5, daysSinceLastAccess / decayHalfLifeDays);
+  return currentSalience * decayFactor;
 }
