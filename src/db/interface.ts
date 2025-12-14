@@ -134,6 +134,17 @@ export interface ISynthesisDatabase {
    */
   getAllSessionIds(): Promise<string[]>;
 
+  /**
+   * Search nodes by exact text match (LIKE) across all text fields
+   * Returns nodes where the term appears in one_liner, summary, full_synthesis,
+   * entity_name, or entity_aliases (case-insensitive)
+   */
+  searchNodesByText(
+    term: string,
+    limit?: number,
+    nodeTypes?: NodeType[]
+  ): Promise<Array<SynthesisNode & { match_location: 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases' }>>;
+
   // ============ Vector Operations ============
 
   /**

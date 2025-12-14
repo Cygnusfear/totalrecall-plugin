@@ -200,6 +200,83 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
     return results.map((r) => r.source_session_id as string);
   }
 
+  async searchNodesByText(
+    term: string,
+    limit: number = 20,
+    nodeTypes?: NodeType[]
+  ): Promise<
+    Array<
+      SynthesisNode & {
+        match_location: 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases';
+      }
+    >
+  > {
+    // Use ILIKE for case-insensitive search with priority ranking
+    const searchPattern = `%${term}%`;
+    const results: Array<
+      SynthesisNode & {
+        match_location: 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases';
+        priority: number;
+      }
+    > = [];
+    const seenIds = new Set<string>();
+
+    // Priority order: entity_name (1), one_liner (2), entity_aliases (3), summary (4), full_synthesis (5)
+    const searches: Array<{
+      location: 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases';
+      column: string;
+      priority: number;
+    }> = [
+      { location: 'entity_name', column: 'entity_name', priority: 1 },
+      { location: 'one_liner', column: 'one_liner', priority: 2 },
+      { location: 'entity_aliases', column: 'entity_aliases', priority: 3 },
+      { location: 'summary', column: 'summary', priority: 4 },
+      { location: 'full_synthesis', column: 'full_synthesis', priority: 5 },
+    ];
+
+    for (const { location, column, priority } of searches) {
+      let rows;
+      if (nodeTypes?.length) {
+        rows = await this.sql`
+          SELECT ${this.sql(this.nodeColumns)}
+          FROM synthesis_nodes
+          WHERE ${this.sql(column)} ILIKE ${searchPattern}
+            AND node_type = ANY(${nodeTypes})
+          ORDER BY last_updated DESC
+        `;
+      } else {
+        rows = await this.sql`
+          SELECT ${this.sql(this.nodeColumns)}
+          FROM synthesis_nodes
+          WHERE ${this.sql(column)} ILIKE ${searchPattern}
+          ORDER BY last_updated DESC
+        `;
+      }
+
+      for (const row of rows) {
+        const node = this.mapNodeFromDb(row as Record<string, unknown>);
+        if (!seenIds.has(node.id)) {
+          seenIds.add(node.id);
+          results.push({ ...node, match_location: location, priority });
+        }
+      }
+    }
+
+    // Sort by priority (best match location first), then by last_updated
+    results.sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return b.last_updated - a.last_updated;
+    });
+
+    // Return only the SynthesisNode & match_location (not the internal priority)
+    return results.slice(0, limit).map((r) => {
+      const { priority: _priority, ...nodeWithLocation } = r;
+      return nodeWithLocation as SynthesisNode & {
+        match_location: 'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases';
+      };
+    });
+  }
+
   // ============ Vector Operations ============
 
   async insertEmbedding(nodeId: string, embedding: number[]): Promise<void> {

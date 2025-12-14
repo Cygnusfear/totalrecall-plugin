@@ -276,6 +276,45 @@ Use this to monitor performance:
     },
   },
   {
+    name: 'synthesis_recall',
+    description: `Recall a specific term or phrase from synthesis memory. Use when you need to find exact matches for proper nouns, acronyms, project names, or specific terms.
+
+Unlike synthesis_search (semantic/exploratory), this tool prioritizes exact text matches across all synthesis fields:
+- entity_name (highest priority)
+- one_liner
+- entity_aliases
+- summary
+- full_synthesis (lowest priority)
+
+Use this to:
+- Find stored entities by name (e.g., "DEVFLOW", "BeadsService")
+- Recall specific terms that may not surface in semantic search
+- Verify if a term exists in memory`,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        term: {
+          type: 'string',
+          description: 'The exact term or phrase to recall (case-insensitive)',
+        },
+        max_results: {
+          type: 'number',
+          description: 'Maximum results to return (default: 10)',
+        },
+        include_semantic_fallback: {
+          type: 'boolean',
+          description: 'If exact matches < 3, also run semantic search (default: true)',
+        },
+        node_types: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Filter by node types (optional)',
+        },
+      },
+      required: ['term'],
+    },
+  },
+  {
     name: 'raw_search',
     description: `Search raw conversation content. Supports both text and semantic search modes.
 
@@ -357,6 +396,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'progressive_disclosure_stats':
         result = await handleProgressiveDisclosureStats(args as unknown as ProgressiveDisclosureStatsArgs);
+        break;
+
+      case 'synthesis_recall':
+        result = await handleSynthesisRecall(args as unknown as SynthesisRecallArgs);
         break;
 
       case 'raw_search':
@@ -1038,6 +1081,109 @@ async function handleProgressiveDisclosureStats(args: ProgressiveDisclosureStats
     return {
       error: 'Failed to get stats',
       message: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+interface SynthesisRecallArgs {
+  term: string;
+  max_results?: number;
+  include_semantic_fallback?: boolean;
+  node_types?: NodeType[];
+}
+
+async function handleSynthesisRecall(args: SynthesisRecallArgs) {
+  const { term, max_results = 10, include_semantic_fallback = true, node_types } = args;
+  const startTime = Date.now();
+
+  try {
+    if (!term || term.trim().length === 0) {
+      return {
+        error: 'Empty term',
+        message: 'Term is required for recall',
+        exact_matches: [],
+        semantic_matches: [],
+      };
+    }
+
+    // Phase 1: Exact text match search
+    const exactMatches = await db.searchNodesByText(term, max_results, node_types);
+    const searchLatencyMs = Date.now() - startTime;
+
+    // Build match_locations map
+    const match_locations: Record<
+      string,
+      'one_liner' | 'summary' | 'full_synthesis' | 'entity_name' | 'entity_aliases'
+    > = {};
+    for (const match of exactMatches) {
+      match_locations[match.id] = match.match_location;
+    }
+
+    // Phase 2: Semantic fallback if exact matches < 3
+    let semanticMatches: Array<{
+      node_id: string;
+      one_liner: string;
+      relevance_score: number;
+      node_type: NodeType;
+    }> = [];
+
+    if (include_semantic_fallback && exactMatches.length < 3) {
+      try {
+        const queryEmbedding = await generateEmbedding(term);
+        const exactIds = new Set(exactMatches.map((m) => m.id));
+        const vectorResults = await db.searchByVector(queryEmbedding, max_results, 0.3, node_types);
+
+        // Filter out results that are already in exact matches
+        semanticMatches = vectorResults
+          .filter((r) => !exactIds.has(r.node_id))
+          .slice(0, max_results - exactMatches.length)
+          .map((r) => ({
+            node_id: r.node_id,
+            one_liner: r.one_liner,
+            relevance_score: Math.round(r.score * 100) / 100,
+            node_type: r.node_type,
+          }));
+      } catch {
+        // Semantic search failed, continue with exact matches only
+      }
+    }
+
+    return {
+      exact_matches: exactMatches.map((m) => ({
+        node_id: m.id,
+        node_type: m.node_type,
+        one_liner: m.one_liner,
+        summary: m.summary,
+        match_location: m.match_location,
+        entity_name: m.entity_name,
+        last_updated: m.last_updated,
+      })),
+      semantic_matches: semanticMatches,
+      match_locations,
+      search_latency_ms: searchLatencyMs,
+      term,
+      message:
+        exactMatches.length > 0
+          ? `Found ${exactMatches.length} exact matches for "${term}"${
+              semanticMatches.length > 0
+                ? ` + ${semanticMatches.length} semantic matches`
+                : ''
+            }`
+          : semanticMatches.length > 0
+            ? `No exact matches, but found ${semanticMatches.length} semantic matches for "${term}"`
+            : `No matches found for "${term}"`,
+      next_step:
+        exactMatches.length > 0 || semanticMatches.length > 0
+          ? 'Use synthesis_unfold(node_id) to get full details on any match.'
+          : 'Try synthesis_search for semantic exploration, or check spelling.',
+    };
+  } catch (error) {
+    return {
+      error: 'Recall failed',
+      message: error instanceof Error ? error.message : 'Unknown error',
+      exact_matches: [],
+      semantic_matches: [],
+      search_latency_ms: Date.now() - startTime,
     };
   }
 }

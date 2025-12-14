@@ -1034,6 +1034,129 @@ async function testRawContentVectorSearch() {
   console.log('Raw content vector search tests: PASS\n');
 }
 
+async function testSynthesisRecall() {
+  console.log('Test: Synthesis recall (exact text search)...');
+  await cleanup();
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
+
+  // Create nodes with various content for recall testing
+  await db.createNode({
+    node_type: 'entity',
+    one_liner: 'DEVFLOW workflow automation system',
+    summary: 'A CLI tool for orchestrating development workflows',
+    full_synthesis: 'DEVFLOW provides automated development processes including testing, deployment, and code review.',
+    entity_name: 'DEVFLOW',
+    entity_aliases: JSON.stringify(['devflow', 'DevFlow']),
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now(),
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'recall-test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  await db.createNode({
+    node_type: 'learning',
+    one_liner: 'Authentication best practices for APIs',
+    summary: 'JWT tokens provide stateless authentication for BeadsService',
+    full_synthesis: 'The BeadsService API uses JWT tokens with refresh capabilities.',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now() + 1000,
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'recall-test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  await db.createNode({
+    node_type: 'decision',
+    one_liner: 'Use PostgreSQL for data persistence',
+    summary: 'PostgreSQL chosen over MySQL for better JSON support',
+    full_synthesis: 'Full rationale for database choice...',
+    entity_name: null,
+    entity_aliases: null,
+    temporal_context: null,
+    first_seen: Date.now(),
+    last_updated: Date.now() + 2000,
+    status: null,
+    assigned_agent: null,
+    priority: null,
+    source_session_id: 'recall-test',
+    source_agent_id: null,
+    source_repo: null,
+  });
+
+  // Test 1: Recall by entity name (highest priority)
+  const devflowResults = await db.searchNodesByText('DEVFLOW', 10);
+  if (devflowResults.length !== 1) {
+    throw new Error(`Expected 1 result for DEVFLOW, got ${devflowResults.length}`);
+  }
+  if (devflowResults[0].match_location !== 'entity_name') {
+    throw new Error(`Expected match_location 'entity_name', got ${devflowResults[0].match_location}`);
+  }
+  console.log('  - Recall by entity name: PASS');
+
+  // Test 2: Recall by one_liner
+  const postgresResults = await db.searchNodesByText('PostgreSQL', 10);
+  if (postgresResults.length !== 1) {
+    throw new Error(`Expected 1 result for PostgreSQL, got ${postgresResults.length}`);
+  }
+  if (postgresResults[0].match_location !== 'one_liner') {
+    throw new Error(`Expected match_location 'one_liner', got ${postgresResults[0].match_location}`);
+  }
+  console.log('  - Recall by one_liner: PASS');
+
+  // Test 3: Recall by summary
+  const beadsResults = await db.searchNodesByText('BeadsService', 10);
+  if (beadsResults.length !== 1) {
+    throw new Error(`Expected 1 result for BeadsService, got ${beadsResults.length}`);
+  }
+  if (beadsResults[0].match_location !== 'summary') {
+    throw new Error(`Expected match_location 'summary', got ${beadsResults[0].match_location}`);
+  }
+  console.log('  - Recall by summary: PASS');
+
+  // Test 4: Case-insensitive search (same node found via entity_name first due to priority)
+  const devflowLowerResults = await db.searchNodesByText('devflow', 10);
+  if (devflowLowerResults.length !== 1) {
+    // Should find the same node (deduplicated) - DEVFLOW matches via entity_name
+    throw new Error(`Expected 1 result for lowercase devflow, got ${devflowLowerResults.length}`);
+  }
+  // Verify it's the entity node (found via entity_name, which has highest priority)
+  if (devflowLowerResults[0].entity_name !== 'DEVFLOW') {
+    throw new Error('Case-insensitive search did not find DEVFLOW entity');
+  }
+  console.log('  - Case-insensitive search: PASS');
+
+  // Test 5: Filter by node type
+  const entityResults = await db.searchNodesByText('DEVFLOW', 10, ['entity']);
+  if (entityResults.length !== 1) {
+    throw new Error(`Expected 1 entity result, got ${entityResults.length}`);
+  }
+  if (entityResults[0].node_type !== 'entity') {
+    throw new Error('Node type filter not working');
+  }
+  console.log('  - Filter by node type: PASS');
+
+  // Test 6: No matches
+  const noResults = await db.searchNodesByText('xyznonexistent123', 10);
+  if (noResults.length !== 0) {
+    throw new Error('Expected 0 results for nonexistent term');
+  }
+  console.log('  - No matches for nonexistent term: PASS');
+
+  await db.close();
+  console.log('Synthesis recall tests: PASS\n');
+}
+
 async function testRelationshipBuilder() {
   console.log('Test: Relationship builder...');
   await cleanup();
@@ -1187,6 +1310,7 @@ async function main() {
     await testActiveRetrievalPipeline();
     await testRawContentSearch();
     await testRawContentVectorSearch();
+    await testSynthesisRecall();
     await testRelationshipBuilder();
 
     console.log('=== ALL TESTS PASSED ===');
