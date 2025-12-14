@@ -542,23 +542,79 @@ interface SynthesisUnfoldArgs {
   depth?: 'summary' | 'full' | 'raw';
 }
 
+/**
+ * Resolve a node ID prefix to full UUID (like git short hashes)
+ * Returns the full node ID if unique match found, null otherwise
+ */
+async function resolveNodeIdPrefix(prefix: string): Promise<{
+  resolvedId: string | null;
+  candidates: string[];
+  error?: string;
+}> {
+  // If it looks like a full UUID, don't resolve
+  if (prefix.length >= 32) {
+    return { resolvedId: prefix, candidates: [] };
+  }
+
+  // Query nodes that start with this prefix
+  // We need to search all nodes - get a reasonable limit
+  const allNodes = await db.queryNodes({ limit: 1000 });
+  const matches = allNodes.filter((n) => n.id.startsWith(prefix));
+
+  if (matches.length === 0) {
+    return { resolvedId: null, candidates: [], error: 'No matching nodes found' };
+  }
+
+  if (matches.length === 1) {
+    return { resolvedId: matches[0].id, candidates: [matches[0].id] };
+  }
+
+  // Multiple matches - return candidates
+  return {
+    resolvedId: null,
+    candidates: matches.map((n) => n.id),
+    error: `Ambiguous prefix: ${matches.length} nodes match`,
+  };
+}
+
 async function handleSynthesisUnfold(args: SynthesisUnfoldArgs) {
   const { node_id, depth = 'summary' } = args;
 
-  const node = await db.getNode(node_id);
+  // First try direct lookup
+  let node = await db.getNode(node_id);
+
+  // If not found and it looks like a prefix (short ID), try prefix resolution
+  if (!node && node_id.length < 32) {
+    const resolution = await resolveNodeIdPrefix(node_id);
+
+    if (resolution.resolvedId) {
+      node = await db.getNode(resolution.resolvedId);
+    } else if (resolution.candidates.length > 1) {
+      return {
+        error: 'Ambiguous node ID prefix',
+        node_id,
+        message: `Prefix '${node_id}' matches ${resolution.candidates.length} nodes. Use a longer prefix or full UUID.`,
+        candidates: resolution.candidates.slice(0, 5).map((id) => ({
+          full_id: id,
+          short_id: id.slice(0, 8),
+        })),
+      };
+    }
+  }
+
   if (!node) {
     return {
       error: 'Node not found',
       node_id,
-      message: `Synthesis node ${node_id} does not exist`,
+      message: `Synthesis node ${node_id} does not exist. If using a short ID prefix, ensure it uniquely identifies a node.`,
     };
   }
 
-  // Track access
-  await db.updateNodeAccess(node_id);
+  // Track access using the actual node ID (may differ from input if prefix was resolved)
+  await db.updateNodeAccess(node.id);
 
-  // Get related nodes
-  const related = await db.getRelatedNodes(node_id);
+  // Get related nodes using actual node ID
+  const related = await db.getRelatedNodes(node.id);
   const related_nodes = related.map(({ node: relatedNode, edge }) => ({
     node_id: relatedNode.id,
     one_liner: relatedNode.one_liner,
