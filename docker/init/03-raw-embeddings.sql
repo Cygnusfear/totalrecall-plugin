@@ -16,7 +16,8 @@ BEGIN
 END $$;
 
 -- Create index for vector similarity search (if doesn't exist)
+-- Uses vchordrq from vchord extension for fast approximate nearest neighbor search
 CREATE INDEX IF NOT EXISTS idx_raw_content_embedding
 ON raw_content USING vchordrq (embedding vector_l2_ops);
 
-RAISE NOTICE 'Raw content embeddings migration complete';
+DO $$ BEGIN RAISE NOTICE 'Raw content embeddings migration complete'; END $$;
