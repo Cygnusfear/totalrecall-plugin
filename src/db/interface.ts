@@ -214,6 +214,33 @@ export interface ISynthesisDatabase {
     includeOrphans?: boolean
   ): Promise<RawContent[]>;
 
+  // ============ Raw Content Vector Operations ============
+
+  /**
+   * Insert embedding for raw content
+   */
+  insertRawEmbedding(rawContentId: string, embedding: number[]): Promise<void>;
+
+  /**
+   * Search raw content by vector similarity
+   */
+  searchRawByVector(
+    queryEmbedding: number[],
+    limit: number,
+    minScore: number,
+    includeOrphans?: boolean
+  ): Promise<Array<RawContent & { score: number }>>;
+
+  /**
+   * Get raw content that doesn't have embeddings yet (for backfill)
+   */
+  getRawContentWithoutEmbedding(limit?: number): Promise<RawContent[]>;
+
+  /**
+   * Get count of raw content embeddings
+   */
+  getRawEmbeddingCount(): Promise<number>;
+
   // ============ Synthesis Queue Operations ============
 
   /**

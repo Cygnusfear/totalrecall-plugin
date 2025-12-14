@@ -586,6 +586,78 @@ export class PostgresSynthesisDatabase implements ISynthesisDatabase {
     }
   }
 
+  // ============ Raw Content Vector Operations ============
+
+  async insertRawEmbedding(rawContentId: string, embedding: number[]): Promise<void> {
+    // PostgreSQL pgvector format: [1,2,3]
+    const vectorStr = `[${embedding.join(',')}]`;
+
+    await this.sql`
+      UPDATE raw_content
+      SET embedding = ${vectorStr}::vector
+      WHERE id = ${rawContentId}
+    `;
+  }
+
+  async searchRawByVector(
+    queryEmbedding: number[],
+    limit: number,
+    minScore: number,
+    includeOrphans: boolean = true
+  ): Promise<Array<RawContent & { score: number }>> {
+    const vectorStr = `[${queryEmbedding.join(',')}]`;
+
+    let rows;
+    if (includeOrphans) {
+      rows = await this.sql`
+        SELECT
+          id, session_id, synthesis_node_id, content_type, content,
+          agent_id, timestamp, message_index, created_at,
+          1 / (1 + (embedding <-> ${vectorStr}::vector)) as score
+        FROM raw_content
+        WHERE embedding IS NOT NULL
+        ORDER BY embedding <-> ${vectorStr}::vector ASC
+        LIMIT ${limit * 2}
+      `;
+    } else {
+      rows = await this.sql`
+        SELECT
+          id, session_id, synthesis_node_id, content_type, content,
+          agent_id, timestamp, message_index, created_at,
+          1 / (1 + (embedding <-> ${vectorStr}::vector)) as score
+        FROM raw_content
+        WHERE embedding IS NOT NULL AND synthesis_node_id IS NOT NULL
+        ORDER BY embedding <-> ${vectorStr}::vector ASC
+        LIMIT ${limit * 2}
+      `;
+    }
+
+    return rows
+      .map((r: Record<string, unknown>) => ({
+        ...this.mapRawContentFromDb(r),
+        score: r.score as number,
+      }))
+      .filter((r) => r.score >= minScore)
+      .slice(0, limit);
+  }
+
+  async getRawContentWithoutEmbedding(limit: number = 100): Promise<RawContent[]> {
+    const rows = await this.sql`
+      SELECT * FROM raw_content
+      WHERE embedding IS NULL
+      ORDER BY timestamp DESC
+      LIMIT ${limit}
+    `;
+    return rows.map((r: Record<string, unknown>) => this.mapRawContentFromDb(r));
+  }
+
+  async getRawEmbeddingCount(): Promise<number> {
+    const [result] = await this.sql`
+      SELECT COUNT(*) as count FROM raw_content WHERE embedding IS NOT NULL
+    `;
+    return parseInt(result.count as string, 10);
+  }
+
   // ============ Synthesis Queue Operations ============
 
   async createSynthesisQueueItem(

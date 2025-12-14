@@ -277,24 +277,32 @@ Use this to monitor performance:
   },
   {
     name: 'raw_search',
-    description: `Search raw conversation content by text. Use when you need to find specific phrases, code snippets, or discussions that may not have been synthesized yet.
-
-Returns raw conversation chunks matching the query, sorted by recency. Each result includes the original content, session ID, and timestamp.
+    description: `Search raw conversation content. Supports both text and semantic search modes.
 
 Use this to:
-- Find exact phrases or code mentioned in past conversations
-- Search for content not yet linked to synthesis nodes
+- Find exact phrases or code mentioned in past conversations (mode: "text")
+- Search semantically for related content (mode: "vector")
+- Find content not yet linked to synthesis nodes
 - Verify what was actually said vs synthesized understanding`,
     inputSchema: {
       type: 'object',
       properties: {
         query: {
           type: 'string',
-          description: 'Text to search for (case-insensitive substring match)',
+          description: 'Search query (text substring for mode=text, natural language for mode=vector)',
+        },
+        mode: {
+          type: 'string',
+          enum: ['text', 'vector'],
+          description: 'Search mode: "text" for exact substring match, "vector" for semantic similarity (default: text)',
         },
         limit: {
           type: 'number',
           description: 'Maximum results to return (default: 20)',
+        },
+        min_score: {
+          type: 'number',
+          description: 'Minimum similarity score for vector search (0-1, default: 0.3)',
         },
         include_orphans: {
           type: 'boolean',
@@ -1036,12 +1044,14 @@ async function handleProgressiveDisclosureStats(args: ProgressiveDisclosureStats
 
 interface RawSearchArgs {
   query: string;
+  mode?: 'text' | 'vector';
   limit?: number;
+  min_score?: number;
   include_orphans?: boolean;
 }
 
 async function handleRawSearch(args: RawSearchArgs) {
-  const { query, limit = 20, include_orphans = true } = args;
+  const { query, mode = 'text', limit = 20, min_score = 0.3, include_orphans = true } = args;
   const startTime = Date.now();
 
   try {
@@ -1053,7 +1063,28 @@ async function handleRawSearch(args: RawSearchArgs) {
       };
     }
 
-    const results = await db.searchRawContentByText(query, limit, include_orphans);
+    let results: Array<{
+      id: string;
+      session_id: string;
+      content_type: string;
+      content: string;
+      timestamp: number;
+      message_index: number | null;
+      synthesis_node_id: string | null;
+      score?: number;
+    }>;
+
+    if (mode === 'vector') {
+      // Generate embedding for semantic search
+      const queryEmbedding = await generateEmbedding(query);
+      const vectorResults = await db.searchRawByVector(queryEmbedding, limit, min_score, include_orphans);
+      results = vectorResults;
+    } else {
+      // Text-based substring search
+      const textResults = await db.searchRawContentByText(query, limit, include_orphans);
+      results = textResults;
+    }
+
     const searchLatencyMs = Date.now() - startTime;
 
     return {
@@ -1067,15 +1098,17 @@ async function handleRawSearch(args: RawSearchArgs) {
         message_index: rc.message_index,
         synthesis_node_id: rc.synthesis_node_id,
         is_orphan: rc.synthesis_node_id === null,
+        score: 'score' in rc ? Math.round((rc.score as number) * 100) / 100 : undefined,
       })),
       total_results: results.length,
       search_latency_ms: searchLatencyMs,
+      search_mode: mode,
       query,
       include_orphans,
       message:
         results.length > 0
-          ? `Found ${results.length} raw content chunks matching "${query}"`
-          : `No raw content found matching "${query}"`,
+          ? `Found ${results.length} raw content chunks (${mode} search)`
+          : `No raw content found matching "${query}" (${mode} search)`,
     };
   } catch (error) {
     return {

@@ -943,6 +943,97 @@ async function testRawContentSearch() {
   console.log('Raw content search tests: PASS\n');
 }
 
+async function testRawContentVectorSearch() {
+  console.log('Test: Raw content vector search...');
+  await cleanup();
+  const db = await createSQLiteDatabase(TEST_DB_PATH);
+  await initEmbeddings();
+
+  // Create raw content with embeddings
+  await db.createRawContent({
+    id: 'raw-vec-1',
+    session_id: 'vec-test-session',
+    synthesis_node_id: null,
+    content_type: 'message',
+    content: 'Machine learning algorithms for natural language processing',
+    agent_id: null,
+    timestamp: Date.now(),
+    message_index: 0,
+  });
+
+  await db.createRawContent({
+    id: 'raw-vec-2',
+    session_id: 'vec-test-session',
+    synthesis_node_id: null,
+    content_type: 'message',
+    content: 'Database indexing strategies for PostgreSQL',
+    agent_id: null,
+    timestamp: Date.now() + 1000,
+    message_index: 1,
+  });
+
+  await db.createRawContent({
+    id: 'raw-vec-3',
+    session_id: 'vec-test-session',
+    synthesis_node_id: null,
+    content_type: 'message',
+    content: 'Deep neural networks and transformer architectures',
+    agent_id: null,
+    timestamp: Date.now() + 2000,
+    message_index: 2,
+  });
+
+  // Generate and insert embeddings for all raw content
+  const rawContent = await db.getRawContentWithoutEmbedding(10);
+  for (const rc of rawContent) {
+    const embedding = await generateEmbedding(rc.content);
+    await db.insertRawEmbedding(rc.id, embedding);
+  }
+
+  // Verify embeddings were created
+  const embeddingCount = await db.getRawEmbeddingCount();
+  if (embeddingCount !== 3) {
+    throw new Error(`Expected 3 embeddings, got ${embeddingCount}`);
+  }
+  console.log('  - Embedding creation: PASS');
+
+  // Test vector search - should find ML-related content
+  const queryEmbedding = await generateEmbedding('AI and machine learning');
+  const vectorResults = await db.searchRawByVector(queryEmbedding, 10, 0.3, true);
+
+  if (vectorResults.length === 0) {
+    throw new Error('Expected vector search results for ML query');
+  }
+  console.log(`  - Vector search found ${vectorResults.length} results: PASS`);
+
+  // Verify scores are in valid range
+  const allScoresValid = vectorResults.every((r) => r.score >= 0 && r.score <= 1);
+  if (!allScoresValid) {
+    throw new Error('Vector search scores not in valid range [0, 1]');
+  }
+  console.log('  - Score range validation: PASS');
+
+  // Verify results are sorted by score (highest first after transformation)
+  const scoresDescending = vectorResults.every((r, i) =>
+    i === 0 || r.score <= vectorResults[i - 1].score
+  );
+  if (!scoresDescending) {
+    throw new Error('Vector search results not sorted by score');
+  }
+  console.log('  - Results sorted by score: PASS');
+
+  // Test min_score filtering
+  const highScoreResults = await db.searchRawByVector(queryEmbedding, 10, 0.9, true);
+  const allHighScores = highScoreResults.every((r) => r.score >= 0.9);
+  if (!allHighScores && highScoreResults.length > 0) {
+    throw new Error('min_score filtering not working correctly');
+  }
+  console.log('  - min_score filtering: PASS');
+
+  await db.close();
+  console.log('Raw content vector search tests: PASS\n');
+}
+
 async function testRelationshipBuilder() {
   console.log('Test: Relationship builder...');
   await cleanup();
@@ -1095,6 +1186,7 @@ async function main() {
     await testQueryRouter();
     await testActiveRetrievalPipeline();
     await testRawContentSearch();
+    await testRawContentVectorSearch();
     await testRelationshipBuilder();
 
     console.log('=== ALL TESTS PASSED ===');

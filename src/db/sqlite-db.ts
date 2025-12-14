@@ -152,6 +152,14 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
       )
     `);
 
+    // Vector embeddings for raw content (enables semantic search on raw conversations)
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS vec_raw_content USING vec0(
+        id TEXT PRIMARY KEY,
+        embedding FLOAT[384]
+      )
+    `);
+
     this.db.exec(`
       CREATE INDEX IF NOT EXISTS idx_raw_content_session_time ON raw_content(session_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_raw_content_synthesis_time ON raw_content(synthesis_node_id, timestamp ASC);
@@ -646,6 +654,88 @@ export class SQLiteSynthesisDatabase implements ISynthesisDatabase {
           .all(searchPattern, limit)
       ) as RawContent[];
     }
+  }
+
+  // ============ Raw Content Vector Operations ============
+
+  async insertRawEmbedding(rawContentId: string, embedding: number[]): Promise<void> {
+    this.db.prepare('DELETE FROM vec_raw_content WHERE id = ?').run(rawContentId);
+    this.db
+      .prepare('INSERT INTO vec_raw_content (id, embedding) VALUES (?, ?)')
+      .run(rawContentId, Buffer.from(new Float32Array(embedding).buffer));
+  }
+
+  async searchRawByVector(
+    queryEmbedding: number[],
+    limit: number,
+    minScore: number,
+    includeOrphans: boolean = true
+  ): Promise<Array<RawContent & { score: number }>> {
+    let query = `
+      SELECT
+        rc.*,
+        vec.distance
+      FROM vec_raw_content AS vec
+      JOIN raw_content AS rc ON vec.id = rc.id
+      WHERE vec.embedding MATCH ? AND k = ?
+    `;
+
+    const params: (Buffer | number | null)[] = [
+      Buffer.from(new Float32Array(queryEmbedding).buffer),
+      limit * 2, // Over-fetch to allow for filtering
+    ];
+
+    if (!includeOrphans) {
+      query += ' AND rc.synthesis_node_id IS NOT NULL';
+    }
+
+    query += ' ORDER BY vec.distance ASC';
+
+    const results = this.db.prepare(query).all(...params) as Array<{
+      id: string;
+      session_id: string;
+      synthesis_node_id: string | null;
+      content_type: 'message' | 'tool_call' | 'tool_result' | 'conversation';
+      content: string;
+      agent_id: string | null;
+      timestamp: number;
+      message_index: number | null;
+      created_at: number;
+      distance: number;
+    }>;
+
+    // Convert L2 distance to similarity score and filter
+    return results
+      .map((r) => {
+        const { distance, ...rawContent } = r;
+        // L2 distance to cosine-like score (assuming normalized embeddings)
+        const score = 1 / (1 + distance);
+        return { ...rawContent, score };
+      })
+      .filter((r) => r.score >= minScore)
+      .slice(0, limit);
+  }
+
+  async getRawContentWithoutEmbedding(limit: number = 100): Promise<RawContent[]> {
+    // Find raw content that doesn't have an embedding yet
+    return this.db
+      .prepare(
+        `
+      SELECT rc.* FROM raw_content rc
+      LEFT JOIN vec_raw_content vec ON rc.id = vec.id
+      WHERE vec.id IS NULL
+      ORDER BY rc.timestamp DESC
+      LIMIT ?
+    `
+      )
+      .all(limit) as RawContent[];
+  }
+
+  async getRawEmbeddingCount(): Promise<number> {
+    const result = this.db.prepare('SELECT COUNT(*) as count FROM vec_raw_content').get() as {
+      count: number;
+    };
+    return result.count;
   }
 
   // ============ Synthesis Queue Operations ============
